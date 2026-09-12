@@ -82,10 +82,16 @@ export function CatalogClient({ userName }: { userName: string }) {
         }
         if (!response.ok) throw new Error('catalog request failed');
         const payload = await response.json() as { items: Array<Record<string, unknown>>; stats: { total?: number; active?: number; verified?: number } };
+        const total = Number(payload.stats?.total ?? 0);
+        if (!total) {
+          setApiAvailable(false); setServerStats(null); setRecords(sampleRecords);
+          setNotice('Безопасная демонстрация: рабочий Excel ещё не импортирован, изменения пока не сохраняются.');
+          return;
+        }
         setRecords(payload.items.map(normalizeRecord));
-        setServerStats({ total: Number(payload.stats?.total ?? 0), active: Number(payload.stats?.active ?? 0), verified: Number(payload.stats?.verified ?? 0) });
+        setServerStats({ total, active: Number(payload.stats?.active ?? 0), verified: Number(payload.stats?.verified ?? 0) });
         setApiAvailable(true);
-        setNotice(payload.stats?.total ? 'Рабочая база подключена. Изменения сохраняются автоматически.' : 'Рабочая база подключена, но каталог пока пуст. Импорт исходного Excel ещё не выполнялся.');
+        setNotice('Рабочая база подключена. Изменения сохраняются автоматически.');
       } catch (error) {
         if ((error as Error).name !== 'AbortError') setNotice('Не удалось связаться с базой. Повторите попытку через несколько секунд.');
       }
