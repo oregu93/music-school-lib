@@ -117,9 +117,10 @@ def main() -> None:
     for _, record in catalog:
         values = [sql(record[column], column == "loan_count") for column in catalog_columns[:-2]] + [sql(now), sql(now)]
         lines.append(f"INSERT INTO catalog_records ({', '.join(catalog_columns)}) VALUES ({', '.join(values)});")
-    loan_columns = [target for _, target in LOAN_FIELDS]
+    loan_columns = ["record_id"] + [target for _, target in LOAN_FIELDS]
     for _, record in loans:
-        values = [sql(record[column], column == "quantity") for column in loan_columns]
+        record_reference = f"(SELECT id FROM catalog_records WHERE db_number = {sql(record['db_number'])} LIMIT 1)"
+        values = [record_reference] + [sql(record[column], column == "quantity") for column in loan_columns[1:]]
         lines.append(f"INSERT INTO loans ({', '.join(loan_columns)}) VALUES ({', '.join(values)});")
     lines.append("COMMIT;")
     args.output.parent.mkdir(parents=True, exist_ok=True)

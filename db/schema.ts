@@ -58,10 +58,18 @@ export const loans = sqliteTable('loans', {
   recordId: integer('record_id').references(() => catalogRecords.id),
   dbNumber: text('db_number').notNull().default(''),
   readerId: text('reader_id').notNull().default(''),
+  readerNote: text('reader_note').notNull().default(''),
   loanDate: text('loan_date').notNull().default(''),
   returnDate: text('return_date').notNull().default(''),
+  returnNote: text('return_note').notNull().default(''),
   quantity: integer('quantity').notNull().default(1),
-}, (table) => [index('idx_loans_record_id').on(table.recordId)]);
+  issuedBy: text('issued_by').notNull().default(''),
+  returnedBy: text('returned_by').notNull().default(''),
+  createdAt: text('created_at').notNull().default(''),
+}, (table) => [
+  index('idx_loans_record_id').on(table.recordId),
+  index('idx_loans_active').on(table.recordId, table.returnDate),
+]);
 
 export const auditLog = sqliteTable('audit_log', {
   id: integer('id').primaryKey({ autoIncrement: true }),

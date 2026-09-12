@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode';
-import { BookOpen, CheckCircle2, CirclePlus, Download, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, BookOpen, CheckCircle2, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -41,6 +41,11 @@ export type CatalogRecord = {
   verified: boolean;
   verifiedAt?: string;
   deleted: boolean;
+};
+
+type LoanEntry = {
+  id: string; readerId: string; readerNote: string; loanDate: string;
+  returnDate: string; returnNote: string; issuedBy: string; returnedBy: string;
 };
 
 const sampleRecords: CatalogRecord[] = [
@@ -159,6 +164,9 @@ export function CatalogClient({ userName }: { userName: string }) {
     setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: false } : item));
     setSelectedId(null); setNotice('Карточка восстановлена в каталоге.');
   };
+  const updateLoanStatus = (recordId: string, loanStatus: string) => {
+    setRecords((current) => current.map((record) => record.id === recordId ? { ...record, loanStatus } : record));
+  };
   const addCopy = async (sourceId: string, dbNumber: string, inventoryNumber: string) => {
     const source = records.find((record) => record.id === sourceId);
     if (!source || !dbNumber.trim()) return;
@@ -203,23 +211,115 @@ export function CatalogClient({ userName }: { userName: string }) {
         <Table><TableHeader><TableRow className="bg-primary/5 hover:bg-primary/5"><TableHead className="w-28 pl-4">№ записи в БД</TableHead><TableHead className="w-28">Проверено</TableHead><TableHead>Автор</TableHead><TableHead className="min-w-72">Заглавие</TableHead><TableHead>Год</TableHead><TableHead>Инвентарный номер</TableHead><TableHead>Статус</TableHead></TableRow></TableHeader><TableBody>{visible.map((record) => <TableRow key={record.id} tabIndex={0} role="button" onClick={() => setSelectedId(record.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(record.id); }} className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"><TableCell className="pl-4 font-mono text-sm">{record.dbNumber || '—'}</TableCell><TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell><TableCell className="font-medium">{record.author || 'Без автора'}</TableCell><TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell><TableCell>{record.year || '—'}</TableCell><TableCell className="font-mono">{record.inventoryNumber || '—'}</TableCell><TableCell><Badge variant={record.state === 'Списан' ? 'destructive' : 'outline'}>{record.deleted ? 'В корзине' : record.loanStatus}</Badge></TableCell></TableRow>)}</TableBody></Table>
       </div>
     </section>
-    <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelectedId(null); }}><SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:max-w-none sm:data-[side=right]:w-[min(96vw,1480px)]">{selected && <RecordCard key={selected.id} record={selected} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} />}</SheetContent></Sheet>
+    <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelectedId(null); }}><SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:max-w-none sm:data-[side=right]:w-[min(96vw,1480px)]">{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onLoanChange={updateLoanStatus} />}</SheetContent></Sheet>
     <AddCopyDialog open={addOpen} records={records.filter((r) => !r.deleted)} onOpenChange={setAddOpen} onAdd={addCopy} />
   </main>;
 }
 
 function Summary({ label, value, muted }: { label: string; value: string; muted?: string }) { return <div className="rounded-xl border bg-card px-5 py-4 shadow-sm"><p className="text-sm text-muted-foreground">{label}</p><div className="mt-1 flex items-baseline gap-2"><strong className="text-2xl font-semibold">{value}</strong>{muted && <span className="text-xs text-muted-foreground">{muted}</span>}</div></div>; }
 
-function RecordCard({ record, onSave, onToggleVerified, onDelete, onRestore }: { record: CatalogRecord; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void }) {
+function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, onRestore, onLoanChange }: { record: CatalogRecord; apiAvailable: boolean; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void; onLoanChange: (recordId: string, status: string) => void }) {
   const [draft, setDraft] = useState(record); const [qr, setQr] = useState('');
   const update = (key: keyof CatalogRecord, value: string) => setDraft((current) => ({ ...current, [key]: value }));
+  useEffect(() => { setDraft((current) => ({ ...current, loanStatus: record.loanStatus })); }, [record.loanStatus]);
   useEffect(() => { const payload = qrPayload(draft); QRCode.toDataURL(payload, { errorCorrectionLevel: 'L', width: 280, margin: 2, color: { dark: '#17324d', light: '#ffffff' } }).then(setQr).catch(() => setQr('')); }, [draft]);
   return <><SheetHeader className="border-b px-6 py-5"><div className="mb-2 flex items-center gap-2"><BookOpen className="size-5 text-primary" />{record.verified && <Badge className="bg-emerald-700">Проверено{record.verifiedAt ? ` ${record.verifiedAt}` : ''}</Badge>}</div><SheetTitle className="pr-10 text-xl">Карточка экземпляра</SheetTitle><SheetDescription>{record.author || 'Без автора'} · {record.title}</SheetDescription></SheetHeader>
-    <div className="px-6 pb-8"><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"><Field label="№ записи в БД" value={draft.dbNumber} onChange={(v) => update('dbNumber', v)} /><Field label="Инвентарный номер" value={draft.inventoryNumber} onChange={(v) => update('inventoryNumber', v)} /><Field label="Автор" value={draft.author} onChange={(v) => update('author', v)} /><Field label="Год издания" value={draft.year} onChange={(v) => update('year', v)} /><Field label="Заглавие" value={draft.title} onChange={(v) => update('title', v)} wide /><Field label="Полные сведения" value={draft.titleFull} onChange={(v) => update('titleFull', v)} wide multiline /><Field label="Сведения об издании" value={draft.edition} onChange={(v) => update('edition', v)} wide /><Field label="Издательство" value={draft.publisher} onChange={(v) => update('publisher', v)} /><Field label="Шифр хранения" value={draft.shelfmark} onChange={(v) => update('shelfmark', v)} /><Field label="Местонахождение" value={draft.location} onChange={(v) => update('location', v)} /><Field label="Статус выдачи" value={draft.loanStatus} onChange={(v) => update('loanStatus', v)} /><Field label="Темы" value={draft.subjects} onChange={(v) => update('subjects', v)} wide /><Field label="Примечания" value={draft.notes} onChange={(v) => update('notes', v)} wide multiline /></div><aside className="mt-6 flex flex-col items-center gap-4 rounded-xl border bg-muted/35 p-4 text-center sm:flex-row sm:text-left">{qr ? <img src={qr} alt="QR-код с информацией из карточки" className="aspect-square w-36 shrink-0 rounded-md bg-white" /> : <div className="aspect-square w-36 shrink-0 animate-pulse rounded-md bg-muted" />}<div><p className="font-medium">QR-код экземпляра</p><p className="mt-1 max-w-lg text-sm leading-relaxed text-muted-foreground">Содержит библиографические сведения и данные для поиска книги на полке. Личная информация читателей в QR-код не включается.</p></div></aside></div>
+    <div className="px-6 pb-8">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <Field label="№ записи в БД" value={draft.dbNumber} onChange={(v) => update('dbNumber', v)} />
+        <Field label="Инвентарный номер" value={draft.inventoryNumber} onChange={(v) => update('inventoryNumber', v)} />
+        <Field label="Автор" value={draft.author} onChange={(v) => update('author', v)} />
+        <Field label="Год издания" value={draft.year} onChange={(v) => update('year', v)} />
+        <Field label="Заглавие" value={draft.title} onChange={(v) => update('title', v)} wide />
+        <Field label="Полные сведения" value={draft.titleFull} onChange={(v) => update('titleFull', v)} wide multiline />
+        <Field label="Сведения об издании" value={draft.edition} onChange={(v) => update('edition', v)} wide />
+        <Field label="Издательство" value={draft.publisher} onChange={(v) => update('publisher', v)} />
+        <Field label="Шифр хранения" value={draft.shelfmark} onChange={(v) => update('shelfmark', v)} />
+        <Field label="Местонахождение" value={draft.location} onChange={(v) => update('location', v)} />
+        <Field label="Статус выдачи" value={draft.loanStatus} onChange={() => undefined} readOnly />
+        <Field label="Темы" value={draft.subjects} onChange={(v) => update('subjects', v)} wide />
+        <Field label="Примечания" value={draft.notes} onChange={(v) => update('notes', v)} wide multiline />
+      </div>
+      <LoanPanel record={record} apiAvailable={apiAvailable} onStatusChange={(status) => onLoanChange(record.id, status)} />
+      <aside className="mt-6 flex flex-col items-center gap-4 rounded-xl border bg-muted/35 p-4 text-center sm:flex-row sm:text-left">{qr ? <img src={qr} alt="QR-код с информацией из карточки" className="aspect-square w-36 shrink-0 rounded-md bg-white" /> : <div className="aspect-square w-36 shrink-0 animate-pulse rounded-md bg-muted" />}<div><p className="font-medium">QR-код экземпляра</p><p className="mt-1 max-w-lg text-sm leading-relaxed text-muted-foreground">Содержит библиографические сведения и данные для поиска книги на полке. Личная информация читателей в QR-код не включается.</p></div></aside>
+    </div>
     <div className="sticky bottom-0 flex flex-wrap justify-between gap-2 border-t bg-background/95 px-6 py-4 backdrop-blur"><div>{record.deleted ? <Button variant="outline" className="gap-2" onClick={() => onRestore(record)}><RotateCcw /> Восстановить</Button> : <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Переместить карточку в корзину?</AlertDialogTitle><AlertDialogDescription>Карточка исчезнет из каталога, но её можно будет восстановить.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onDelete(record)}>Переместить в корзину</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</div><div className="flex flex-wrap gap-2">{!record.deleted && <Button variant="outline" onClick={() => onToggleVerified(record)}>{record.verified ? 'Снять отметку «Проверено»' : 'Отметить проверенной'}</Button>}<Button disabled={record.deleted} onClick={() => onSave(draft)}>Сохранить изменения</Button></div></div></>;
 }
 
-function Field({ label, value, onChange, wide = false, multiline = false }: { label: string; value: string; onChange: (value: string) => void; wide?: boolean; multiline?: boolean }) { return <label className={wide ? 'sm:col-span-2' : ''}><span className="mb-1.5 block text-sm font-medium">{label}</span>{multiline ? <Textarea value={value} onChange={(event) => onChange(event.target.value)} className="min-h-20 text-base md:text-sm" /> : <Input value={value} onChange={(event) => onChange(event.target.value)} className="h-10" />}</label>; }
+function LoanPanel({ record, apiAvailable, onStatusChange }: { record: CatalogRecord; apiAvailable: boolean; onStatusChange: (status: string) => void }) {
+  const [items, setItems] = useState<LoanEntry[]>(() => demoLoans(record));
+  const [readerNote, setReaderNote] = useState('');
+  const [readerId, setReaderId] = useState('');
+  const [returnNote, setReturnNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!apiAvailable) return;
+    const controller = new AbortController();
+    fetch(`/api/catalog/${record.id}/loans`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Не удалось загрузить журнал выдач');
+        const payload = await response.json() as { items: Array<Record<string, unknown>> };
+        setItems(payload.items.map(normalizeLoan));
+      })
+      .catch((reason) => { if (reason.name !== 'AbortError') setError(reason.message); });
+    return () => controller.abort();
+  }, [apiAvailable, record.id]);
+
+  const active = items.find((item) => !item.returnDate);
+  const perform = async (action: 'issue' | 'return') => {
+    const note = action === 'issue' ? readerNote.trim() : returnNote.trim();
+    if (!note) { setError(action === 'issue' ? 'Укажите, кому выдан экземпляр.' : 'Укажите, кто сдал экземпляр.'); return; }
+    setBusy(true); setError('');
+    try {
+      let loan: LoanEntry;
+      if (apiAvailable) {
+        const response = await fetch(`/api/catalog/${record.id}/loans`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, readerNote, readerId, returnNote }) });
+        const payload = await response.json() as { error?: string; loan?: Record<string, unknown>; loanStatus?: string };
+        if (!response.ok || !payload.loan) throw new Error(payload.error || 'Операция не сохранена');
+        loan = normalizeLoan(payload.loan);
+      } else if (action === 'issue') {
+        loan = { id: crypto.randomUUID(), readerId: readerId.trim(), readerNote: readerNote.trim(), loanDate: new Date().toISOString(), returnDate: '', returnNote: '', issuedBy: 'Библиотекарь', returnedBy: '' };
+      } else {
+        loan = { ...active!, returnDate: new Date().toISOString(), returnNote: returnNote.trim(), returnedBy: 'Библиотекарь' };
+      }
+      setItems((current) => action === 'issue' ? [loan, ...current] : current.map((item) => item.id === loan.id ? loan : item));
+      onStatusChange(action === 'issue' ? 'Выдана' : 'В наличии');
+      setReaderNote(''); setReaderId(''); setReturnNote('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Операция не сохранена');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <section className="mt-6 rounded-xl border bg-card p-4 sm:p-5">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 font-semibold"><History className="size-5 text-primary" />Выдача и возврат</h3><p className="mt-1 text-sm text-muted-foreground">Краткая отметка о читателе и история операций</p></div><Badge className={active ? 'bg-amber-600 text-white' : record.state === 'Списан' ? 'bg-destructive text-white' : 'bg-emerald-700 text-white'}>{active ? 'Книга выдана' : record.state === 'Списан' ? 'Списана' : 'В наличии'}</Badge></div>
+    <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]">
+      <div className="rounded-lg border bg-muted/25 p-4">{active ? <><p className="mb-3 text-sm"><strong>Сейчас у читателя:</strong> {active.readerNote || active.readerId || 'читатель не указан'}{active.readerNote && active.readerId ? ` · код ${active.readerId}` : ''}</p><Field label="Кто сдал экземпляр / примечание" value={returnNote} onChange={setReturnNote} /><Button className="mt-3 gap-2" disabled={busy || !returnNote.trim()} onClick={() => perform('return')}><ArrowDownToLine />Принять возврат</Button></> : <><div className="grid gap-3 sm:grid-cols-2"><Field label="Кому выдан экземпляр" value={readerNote} onChange={setReaderNote} /><Field label="Код читателя (необязательно)" value={readerId} onChange={setReaderId} /></div><Button className="mt-3 gap-2" disabled={busy || !readerNote.trim() || record.state === 'Списан'} onClick={() => perform('issue')}><ArrowUpFromLine />Выдать экземпляр</Button></>}</div>
+      <div><p className="mb-2 text-sm font-medium">Последние операции</p>{items.length ? <div className="max-h-52 space-y-2 overflow-y-auto pr-1">{items.map((item) => <div key={item.id} className="rounded-lg border px-3 py-2 text-sm"><p><strong>Выдана:</strong> {item.readerNote || item.readerId || 'Без примечания'} · {formatLoanDate(item.loanDate)}</p><p className="text-muted-foreground">Оформил: {item.issuedBy || 'не указано'}</p>{item.returnDate ? <><p className="mt-1"><strong>Возвращена:</strong> {item.returnNote || item.readerNote || item.readerId} · {formatLoanDate(item.returnDate)}</p><p className="text-muted-foreground">Принял: {item.returnedBy || 'не указано'}</p></> : <p className="mt-1 font-medium text-amber-700">Возврат ожидается</p>}</div>)}</div> : <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Операций пока нет.</p>}</div>
+    </div>
+    {error && <p className="mt-3 text-sm text-destructive" role="alert">{error}</p>}
+  </section>;
+}
+
+function normalizeLoan(raw: Record<string, unknown>): LoanEntry {
+  const value = (key: string) => typeof raw[key] === 'string' ? raw[key] as string : '';
+  return { id: String(raw.id ?? ''), readerId: value('readerId'), readerNote: value('readerNote'), loanDate: value('loanDate'), returnDate: value('returnDate'), returnNote: value('returnNote'), issuedBy: value('issuedBy'), returnedBy: value('returnedBy') };
+}
+
+function demoLoans(record: CatalogRecord): LoanEntry[] {
+  return record.loanStatus === 'Выдана' ? [{ id: `demo-${record.id}`, readerId: '', readerNote: 'Ученик, класс фортепиано', loanDate: '2026-09-10T12:00:00.000Z', returnDate: '', returnNote: '', issuedBy: 'Библиотекарь', returnedBy: '' }] : [];
+}
+
+function formatLoanDate(value: string) {
+  if (!value) return 'дата не указана';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function Field({ label, value, onChange, wide = false, multiline = false, readOnly = false }: { label: string; value: string; onChange: (value: string) => void; wide?: boolean; multiline?: boolean; readOnly?: boolean }) { return <label className={wide ? 'sm:col-span-2' : ''}><span className="mb-1.5 block text-sm font-medium">{label}</span>{multiline ? <Textarea value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} className="min-h-20 text-base md:text-sm" /> : <Input value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} className={readOnly ? 'h-10 bg-muted/50' : 'h-10'} />}</label>; }
 
 function AddCopyDialog({ open, records, onOpenChange, onAdd }: { open: boolean; records: CatalogRecord[]; onOpenChange: (open: boolean) => void; onAdd: (sourceId: string, dbNumber: string, inventoryNumber: string) => void }) {
   const [sourceId, setSourceId] = useState(records[0]?.id ?? ''); const [dbNumber, setDbNumber] = useState(''); const [inventoryNumber, setInventoryNumber] = useState('');

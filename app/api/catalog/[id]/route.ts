@@ -14,8 +14,6 @@ const EDITABLE_FIELDS: Record<string, string> = {
   fundType: 'fund_type', invoice: 'invoice', inventoryMode: 'inventory_mode',
   registrationDate: 'registration_date', writeoffDate: 'writeoff_date',
   writeoffAct: 'writeoff_act', writeoffReason: 'writeoff_reason',
-  loanStatus: 'loan_status', readerId: 'reader_id', lastLoanDate: 'last_loan_date',
-  lastReturnDate: 'last_return_date', loanCount: 'loan_count',
 };
 
 type RouteContext = { params: Promise<{ id: string }> | { id: string } };
