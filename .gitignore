@@ -28,6 +28,9 @@ yarn-error.log*
 
 # local environment
 .env*
+!.env.example
+/private-data/
+*.catalog-import.sql
 
 # deployment and generated files
 .vercel
