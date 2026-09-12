@@ -4,6 +4,9 @@
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-05-22",
 
+  "vars": {
+    "YANDEX_CLIENT_ID": "26eaf224ee3c4ae1bc0252c5b49810e6"
+  },
   "assets": {
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
