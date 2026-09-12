@@ -39,3 +39,15 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+.dev.vars
+.wrangler/
+patch-*.mjs
+fix-*.mjs
+repair-*.mjs
+*.before-*.ts
+*.before-*.tsx
+*.before-*.mjs
+remove-*.mjs
+package.next-backup.json
+
+prepare-checkpoint.mjs

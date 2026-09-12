@@ -72,6 +72,22 @@ export function CatalogClient({ userName }: { userName: string }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [notice, setNotice] = useState('Демонстрационный режим: полный каталог ещё не импортирован.');
+  const [actionNotice, setActionNotice] = useState('');
+
+  useEffect(() => {
+    if (!actionNotice) return;
+
+    const timer = window.setTimeout(() => {
+      setActionNotice('');
+    }, 2500);
+
+    return () => window.clearTimeout(timer);
+  }, [actionNotice]);
+
+  const confirmAction = (message: string) => {
+    setNotice(message);
+    setActionNotice(message);
+  };
 
   useEffect(() => {
     if (apiAvailable === false) return;
@@ -88,15 +104,18 @@ export function CatalogClient({ userName }: { userName: string }) {
         if (!response.ok) throw new Error('catalog request failed');
         const payload = await response.json() as { items: Array<Record<string, unknown>>; stats: { total?: number; active?: number; verified?: number } };
         const total = Number(payload.stats?.total ?? 0);
-        if (!total) {
-          setApiAvailable(false); setServerStats(null); setRecords(sampleRecords);
-          setNotice('Безопасная демонстрация: рабочий Excel ещё не импортирован, изменения пока не сохраняются.');
-          return;
-        }
         setRecords(payload.items.map(normalizeRecord));
-        setServerStats({ total, active: Number(payload.stats?.active ?? 0), verified: Number(payload.stats?.verified ?? 0) });
+        setServerStats({
+          total,
+          active: Number(payload.stats?.active ?? 0),
+          verified: Number(payload.stats?.verified ?? 0),
+        });
         setApiAvailable(true);
-        setNotice('Рабочая база подключена. Изменения сохраняются автоматически.');
+        setNotice(
+          total > 0
+            ? 'Рабочая база подключена. Изменения сохраняются автоматически.'
+            : 'Рабочая база подключена. Каталог пока пуст.',
+        );
       } catch (error) {
         if ((error as Error).name !== 'AbortError') setNotice('Не удалось связаться с базой. Повторите попытку через несколько секунд.');
       }
@@ -143,8 +162,14 @@ export function CatalogClient({ userName }: { userName: string }) {
 
   const saveRecord = async (next: CatalogRecord) => {
     if (apiAvailable && !await apiRequest(`/api/catalog/${next.id}`, { method: 'PATCH', body: JSON.stringify(next) }, setNotice)) return;
-    setRecords((current) => current.map((record) => record.id === next.id ? next : record));
-    setNotice(`Карточка № ${next.dbNumber || 'без номера'} сохранена.`);
+    setRecords((current) => current.map((record) => record.id === next.id ? {
+      ...next,
+      verified: record.verified,
+      verifiedAt: record.verifiedAt,
+      deleted: record.deleted,
+      loanStatus: record.loanStatus,
+    } : record));
+    confirmAction(`Карточка № ${next.dbNumber || 'без номера'} сохранена.`);
   };
   const toggleVerifiedRecord = async (record: CatalogRecord) => {
     const verified = !record.verified;
@@ -152,34 +177,132 @@ export function CatalogClient({ userName }: { userName: string }) {
     const next = { ...record, verified, verifiedAt: verified ? new Date().toLocaleDateString('ru-RU') : undefined };
     setRecords((current) => current.map((item) => item.id === next.id ? next : item));
     setServerStats((current) => current ? { ...current, verified: Math.max(0, current.verified + (verified ? 1 : -1)) } : null);
-    setNotice(verified ? `Карточка № ${record.dbNumber || 'без номера'} проверена.` : `Отметка «Проверено» снята с карточки № ${record.dbNumber || 'без номера'}.`);
+    confirmAction(
+      verified
+        ? `Карточка № ${record.dbNumber || 'без номера'} проверена.`
+        : `Отметка «Проверено» снята с карточки № ${record.dbNumber || 'без номера'}.`,
+    );
   };
   const deleteRecord = async (record: CatalogRecord) => {
     if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}`, { method: 'DELETE' }, setNotice)) return;
     setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: true } : item));
-    setSelectedId(null); setNotice('Карточка перемещена в корзину. Её можно восстановить.');
+    setSelectedId(null);
+    confirmAction('Карточка перемещена в корзину. Её можно восстановить.');
   };
   const restoreRecord = async (record: CatalogRecord) => {
     if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/restore`, { method: 'POST' }, setNotice)) return;
     setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: false } : item));
-    setSelectedId(null); setNotice('Карточка восстановлена в каталоге.');
+    setSelectedId(null);
+    confirmAction('Карточка восстановлена в каталоге.');
   };
   const updateLoanStatus = (recordId: string, loanStatus: string) => {
     setRecords((current) => current.map((record) => record.id === recordId ? { ...record, loanStatus } : record));
   };
-  const addCopy = async (sourceId: string, dbNumber: string, inventoryNumber: string) => {
-    const source = records.find((record) => record.id === sourceId);
-    if (!source || !dbNumber.trim()) return;
-    const next = { ...source, id: crypto.randomUUID(), dbNumber: dbNumber.trim(), inventoryNumber: inventoryNumber.trim(), verified: false, verifiedAt: undefined, deleted: false, state: 'В фонде' as const, loanStatus: 'В наличии' };
+  const addCopy = async (
+    sourceId: string,
+    dbNumber: string,
+    inventoryNumber: string,
+  ) => {
+    if (!dbNumber.trim()) return;
+
+    const source = records.find(
+      (record) => record.id === sourceId,
+    );
+
+    const next: CatalogRecord = source
+      ? {
+          ...source,
+          id: crypto.randomUUID(),
+          dbNumber: dbNumber.trim(),
+          inventoryNumber: inventoryNumber.trim(),
+          verified: false,
+          verifiedAt: undefined,
+          deleted: false,
+          state: 'В фонде',
+          loanStatus: 'В наличии',
+        }
+      : {
+          id: crypto.randomUUID(),
+          dbNumber: dbNumber.trim(),
+          inventoryNumber: inventoryNumber.trim(),
+          bibliographicId: '',
+          author: '',
+          title: '',
+          titleFull: '',
+          edition: '',
+          publicationPlace: '',
+          publisher: '',
+          year: '',
+          physicalDescription: '',
+          subjects: '',
+          keywords: '',
+          classification: '',
+          shelfmark: '',
+          notes: '',
+          location: '',
+          accountingStatus: '',
+          fundType: '',
+          invoice: '',
+          state: 'В фонде',
+          loanStatus: 'В наличии',
+          verified: false,
+          verifiedAt: undefined,
+          deleted: false,
+        };
+
     if (apiAvailable) {
-      const response = await fetch('/api/catalog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
-      if (!response.ok) { setNotice('Не удалось добавить экземпляр. Изменения не сохранены.'); return; }
-      const payload = await response.json() as { record: Record<string, unknown> };
+      const response = await fetch('/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(next),
+      });
+
+      if (!response.ok) {
+        const payload = await response
+          .json()
+          .catch(() => ({})) as { error?: string };
+
+        setNotice(
+          payload.error ??
+            'Не удалось добавить экземпляр. Изменения не сохранены.',
+        );
+        return;
+      }
+
+      const payload = await response.json() as {
+        record: Record<string, unknown>;
+      };
+
       const saved = normalizeRecord(payload.record);
-      setRecords((current) => [...current, saved]); setAddOpen(false); setSelectedId(saved.id); setNotice(`Экземпляр № ${saved.dbNumber} добавлен.`);
+
+      setRecords((current) => [...current, saved]);
+      setServerStats((current) =>
+        current
+          ? {
+              ...current,
+              total: current.total + 1,
+              active: current.active + 1,
+            }
+          : current,
+      );
+
+      setAddOpen(false);
+      setSelectedId(saved.id);
+      confirmAction(
+      `Экземпляр № ${saved.dbNumber || 'без номера'} добавлен.`,
+    );
+
       return;
     }
-    setRecords((current) => [...current, next]); setAddOpen(false); setSelectedId(next.id); setNotice(`Экземпляр № ${next.dbNumber} добавлен.`);
+
+    setRecords((current) => [...current, next]);
+    setAddOpen(false);
+    setSelectedId(next.id);
+    confirmAction(
+      `Экземпляр № ${next.dbNumber || 'без номера'} добавлен.`,
+    );
   };
   const exportCsv = () => {
     const active = records.filter((record) => !record.deleted);
@@ -193,10 +316,37 @@ export function CatalogClient({ userName }: { userName: string }) {
   const verifiedCount = serverStats?.verified ?? records.filter((record) => !record.deleted && record.verified).length;
   const totalCount = serverStats?.total ?? records.filter((record) => !record.deleted).length;
 
+  const noticeIsSuccess = apiAvailable === true && (
+    notice.includes('сохранена') ||
+    notice.includes('проверена') ||
+    notice.includes('снята') ||
+    notice.includes('добавлен') ||
+    notice.includes('восстановлена') ||
+    notice.includes('перемещена') ||
+    notice.includes('Рабочая база подключена')
+  );
+
   return <main className="min-h-screen bg-background text-foreground">
-    <header className="library-header border-b px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4"><div className="flex items-center gap-3"><div className="grid size-11 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Library className="size-6" /></div><div><h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">Электронный каталог</h1><p className="text-sm text-muted-foreground">Библиотека музыкальной школы</p></div></div><Badge variant="outline" className="hidden h-7 gap-1.5 px-3 sm:flex"><ShieldCheck /> {userName}</Badge></div></header>
+    <header className="library-header border-b px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4"><div className="flex items-center gap-3"><div className="grid size-11 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Library className="size-6" /></div><div><h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">Электронный каталог</h1><p className="text-sm text-muted-foreground">Библиотека музыкальной школы</p></div></div><div className="flex items-center gap-2">
+    <Badge
+      variant="outline"
+      className="hidden h-7 gap-1.5 px-3 sm:flex"
+    >
+      <ShieldCheck /> {userName}
+    </Badge>
+
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => {
+        window.location.href = '/api/auth/logout';
+      }}
+    >
+      Выйти
+    </Button>
+  </div></div></header>
     <section className="mx-auto max-w-[1600px] p-4 lg:p-8">
-      <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="status">{notice}</div>
+      <div className={noticeIsSuccess ? 'mb-4 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950' : 'mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950'} role="status">{notice}</div>
       <div className="mb-5 grid gap-3 sm:grid-cols-3"><Summary label="Экземпляров" value={String(totalCount)} muted={apiAvailable ? undefined : 'в демонстрации'} /><Summary label="В фонде" value={String(activeCount)} /><Summary label="Проверено" value={String(verifiedCount)} /></div>
       <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
         <div className="flex flex-col gap-3 border-b p-4 xl:flex-row xl:items-center">
@@ -208,17 +358,64 @@ export function CatalogClient({ userName }: { userName: string }) {
           <Button variant="outline" className="h-11 gap-2" onClick={exportCsv}><Download /> Скачать CSV</Button>
         </div>
         <div className="flex items-center justify-between border-b bg-muted/35 px-4 py-2.5 text-sm text-muted-foreground"><span>Найдено: <strong className="text-foreground">{visible.length}</strong></span><span className="hidden sm:inline">Нажмите на строку, чтобы открыть карточку</span></div>
-        <Table><TableHeader><TableRow className="bg-primary/5 hover:bg-primary/5"><TableHead className="w-28 pl-4">№ записи в БД</TableHead><TableHead className="w-28">Проверено</TableHead><TableHead>Автор</TableHead><TableHead className="min-w-72">Заглавие</TableHead><TableHead>Год</TableHead><TableHead>Инвентарный номер</TableHead><TableHead>Статус</TableHead></TableRow></TableHeader><TableBody>{visible.map((record) => <TableRow key={record.id} tabIndex={0} role="button" onClick={() => setSelectedId(record.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(record.id); }} className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"><TableCell className="pl-4 font-mono text-sm">{record.dbNumber || '—'}</TableCell><TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell><TableCell className="font-medium">{record.author || 'Без автора'}</TableCell><TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell><TableCell>{record.year || '—'}</TableCell><TableCell className="font-mono">{record.inventoryNumber || '—'}</TableCell><TableCell><Badge variant={record.state === 'Списан' ? 'destructive' : 'outline'}>{record.deleted ? 'В корзине' : record.loanStatus}</Badge></TableCell></TableRow>)}</TableBody></Table>
+        <Table><TableHeader><TableRow className="bg-primary/5 hover:bg-primary/5"><TableHead className="w-28 pl-4">№ записи в БД</TableHead><TableHead className="w-28">Проверено</TableHead><TableHead>Автор</TableHead><TableHead className="min-w-72">Заглавие</TableHead><TableHead>Год</TableHead><TableHead>Инвентарный номер</TableHead><TableHead>Статус</TableHead></TableRow></TableHeader><TableBody>{visible.map((record) => <TableRow key={record.id} tabIndex={0} role="button" onClick={() => setSelectedId(record.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(record.id); }} className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"><TableCell className="pl-4 font-mono text-sm">{record.dbNumber || '—'}</TableCell><TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell><TableCell className="font-medium">{record.author || 'Без автора'}</TableCell><TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell><TableCell>{record.year || '—'}</TableCell><TableCell className="font-mono">{record.inventoryNumber || '—'}</TableCell><TableCell>
+    <Badge
+      variant="outline"
+      className={loanStatusClass(record.loanStatus, {
+        deleted: record.deleted,
+        writtenOff: record.state === 'Списан',
+      })}
+    >
+      {record.deleted ? 'В корзине' : record.loanStatus}
+    </Badge>
+  </TableCell></TableRow>)}</TableBody></Table>
       </div>
     </section>
-    <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelectedId(null); }}><SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:max-w-none sm:data-[side=right]:w-[min(96vw,1480px)]">{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onLoanChange={updateLoanStatus} />}</SheetContent></Sheet>
+    <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelectedId(null); }}><SheetContent className="overflow-y-auto" style={{ width: 'min(96vw, 1480px)', maxWidth: 'none' }}>{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onLoanChange={updateLoanStatus} onLoanNotice={confirmAction} />}</SheetContent></Sheet>
     <AddCopyDialog open={addOpen} records={records.filter((r) => !r.deleted)} onOpenChange={setAddOpen} onAdd={addCopy} />
+
+    {actionNotice && (
+      <div
+        className="fixed bottom-6 right-6 z-[100] max-w-sm rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-950 shadow-lg"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex items-center gap-2">
+          <CheckCircle2 className="size-4 shrink-0 text-emerald-700" />
+          <span>{actionNotice}</span>
+        </div>
+      </div>
+    )}
+
   </main>;
+}
+
+
+function loanStatusClass(
+  status: string,
+  options?: {
+    deleted?: boolean;
+    writtenOff?: boolean;
+  },
+) {
+  if (options?.deleted) {
+    return 'border-slate-300 bg-slate-100/80 text-slate-700';
+  }
+
+  if (options?.writtenOff) {
+    return 'border-red-300 bg-red-50/80 text-red-800';
+  }
+
+  if (status === 'Выдана' || status === 'Книга выдана') {
+    return 'border-amber-300 bg-amber-50/80 text-amber-800';
+  }
+
+  return 'border-emerald-300 bg-emerald-50/80 text-emerald-800';
 }
 
 function Summary({ label, value, muted }: { label: string; value: string; muted?: string }) { return <div className="rounded-xl border bg-card px-5 py-4 shadow-sm"><p className="text-sm text-muted-foreground">{label}</p><div className="mt-1 flex items-baseline gap-2"><strong className="text-2xl font-semibold">{value}</strong>{muted && <span className="text-xs text-muted-foreground">{muted}</span>}</div></div>; }
 
-function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, onRestore, onLoanChange }: { record: CatalogRecord; apiAvailable: boolean; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void; onLoanChange: (recordId: string, status: string) => void }) {
+function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, onRestore, onLoanChange, onLoanNotice }: { record: CatalogRecord; apiAvailable: boolean; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void; onLoanChange: (recordId: string, status: string) => void; onLoanNotice: (message: string) => void }) {
   const [draft, setDraft] = useState(record); const [qr, setQr] = useState('');
   const update = (key: keyof CatalogRecord, value: string) => setDraft((current) => ({ ...current, [key]: value }));
   useEffect(() => { setDraft((current) => ({ ...current, loanStatus: record.loanStatus })); }, [record.loanStatus]);
@@ -240,13 +437,18 @@ function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, 
         <Field label="Темы" value={draft.subjects} onChange={(v) => update('subjects', v)} wide />
         <Field label="Примечания" value={draft.notes} onChange={(v) => update('notes', v)} wide multiline />
       </div>
-      <LoanPanel record={record} apiAvailable={apiAvailable} onStatusChange={(status) => onLoanChange(record.id, status)} />
+      <LoanPanel
+        record={record}
+        apiAvailable={apiAvailable}
+        onStatusChange={(status) => onLoanChange(record.id, status)}
+        onNotice={onLoanNotice}
+      />
       <aside className="mt-6 flex flex-col items-center gap-4 rounded-xl border bg-muted/35 p-4 text-center sm:flex-row sm:text-left">{qr ? <img src={qr} alt="QR-код с информацией из карточки" className="aspect-square w-36 shrink-0 rounded-md bg-white" /> : <div className="aspect-square w-36 shrink-0 animate-pulse rounded-md bg-muted" />}<div><p className="font-medium">QR-код экземпляра</p><p className="mt-1 max-w-lg text-sm leading-relaxed text-muted-foreground">Содержит библиографические сведения и данные для поиска книги на полке. Личная информация читателей в QR-код не включается.</p></div></aside>
     </div>
     <div className="sticky bottom-0 flex flex-wrap justify-between gap-2 border-t bg-background/95 px-6 py-4 backdrop-blur"><div>{record.deleted ? <Button variant="outline" className="gap-2" onClick={() => onRestore(record)}><RotateCcw /> Восстановить</Button> : <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Переместить карточку в корзину?</AlertDialogTitle><AlertDialogDescription>Карточка исчезнет из каталога, но её можно будет восстановить.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onDelete(record)}>Переместить в корзину</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</div><div className="flex flex-wrap gap-2">{!record.deleted && <Button variant="outline" onClick={() => onToggleVerified(record)}>{record.verified ? 'Снять отметку «Проверено»' : 'Отметить проверенной'}</Button>}<Button disabled={record.deleted} onClick={() => onSave(draft)}>Сохранить изменения</Button></div></div></>;
 }
 
-function LoanPanel({ record, apiAvailable, onStatusChange }: { record: CatalogRecord; apiAvailable: boolean; onStatusChange: (status: string) => void }) {
+function LoanPanel({ record, apiAvailable, onStatusChange, onNotice }: { record: CatalogRecord; apiAvailable: boolean; onStatusChange: (status: string) => void; onNotice: (message: string) => void }) {
   const [items, setItems] = useState<LoanEntry[]>(() => demoLoans(record));
   const [readerNote, setReaderNote] = useState('');
   const [readerId, setReaderId] = useState('');
@@ -286,7 +488,16 @@ function LoanPanel({ record, apiAvailable, onStatusChange }: { record: CatalogRe
       }
       setItems((current) => action === 'issue' ? [loan, ...current] : current.map((item) => item.id === loan.id ? loan : item));
       onStatusChange(action === 'issue' ? 'Выдана' : 'В наличии');
-      setReaderNote(''); setReaderId(''); setReturnNote('');
+
+      onNotice(
+        action === 'issue'
+          ? `Экземпляр № ${record.dbNumber || 'без номера'} выдан.`
+          : `Возврат экземпляра № ${record.dbNumber || 'без номера'} принят.`,
+      );
+
+      setReaderNote('');
+      setReaderId('');
+      setReturnNote('');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Операция не сохранена');
     } finally {
@@ -295,8 +506,22 @@ function LoanPanel({ record, apiAvailable, onStatusChange }: { record: CatalogRe
   };
 
   return <section className="mt-6 rounded-xl border bg-card p-4 sm:p-5">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 font-semibold"><History className="size-5 text-primary" />Выдача и возврат</h3><p className="mt-1 text-sm text-muted-foreground">Краткая отметка о читателе и история операций</p></div><Badge className={active ? 'bg-amber-600 text-white' : record.state === 'Списан' ? 'bg-destructive text-white' : 'bg-emerald-700 text-white'}>{active ? 'Книга выдана' : record.state === 'Списан' ? 'Списана' : 'В наличии'}</Badge></div>
-    <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 font-semibold"><History className="size-5 text-primary" />Выдача и возврат</h3><p className="mt-1 text-sm text-muted-foreground">Краткая отметка о читателе и история операций</p></div><Badge
+    variant="outline"
+    className={loanStatusClass(
+      active ? 'Книга выдана' : 'В наличии',
+      {
+        writtenOff: record.state === 'Списан',
+      },
+    )}
+  >
+    {active
+      ? 'Книга выдана'
+      : record.state === 'Списан'
+        ? 'Списана'
+        : 'В наличии'}
+  </Badge></div>
+    <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]">
       <div className="rounded-lg border bg-muted/25 p-4">{active ? <><p className="mb-3 text-sm"><strong>Сейчас у читателя:</strong> {active.readerNote || active.readerId || 'читатель не указан'}{active.readerNote && active.readerId ? ` · код ${active.readerId}` : ''}</p><Field label="Кто сдал экземпляр / примечание" value={returnNote} onChange={setReturnNote} /><Button className="mt-3 gap-2" disabled={busy || !returnNote.trim()} onClick={() => perform('return')}><ArrowDownToLine />Принять возврат</Button></> : <><div className="grid gap-3 sm:grid-cols-2"><Field label="Кому выдан экземпляр" value={readerNote} onChange={setReaderNote} /><Field label="Код читателя (необязательно)" value={readerId} onChange={setReaderId} /></div><Button className="mt-3 gap-2" disabled={busy || !readerNote.trim() || record.state === 'Списан'} onClick={() => perform('issue')}><ArrowUpFromLine />Выдать экземпляр</Button></>}</div>
       <div><p className="mb-2 text-sm font-medium">Последние операции</p>{items.length ? <div className="max-h-52 space-y-2 overflow-y-auto pr-1">{items.map((item) => <div key={item.id} className="rounded-lg border px-3 py-2 text-sm"><p><strong>Выдана:</strong> {item.readerNote || item.readerId || 'Без примечания'} · {formatLoanDate(item.loanDate)}</p><p className="text-muted-foreground">Оформил: {item.issuedBy || 'не указано'}</p>{item.returnDate ? <><p className="mt-1"><strong>Возвращена:</strong> {item.returnNote || item.readerNote || item.readerId} · {formatLoanDate(item.returnDate)}</p><p className="text-muted-foreground">Принял: {item.returnedBy || 'не указано'}</p></> : <p className="mt-1 font-medium text-amber-700">Возврат ожидается</p>}</div>)}</div> : <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Операций пока нет.</p>}</div>
     </div>
@@ -321,9 +546,127 @@ function formatLoanDate(value: string) {
 
 function Field({ label, value, onChange, wide = false, multiline = false, readOnly = false }: { label: string; value: string; onChange: (value: string) => void; wide?: boolean; multiline?: boolean; readOnly?: boolean }) { return <label className={wide ? 'sm:col-span-2' : ''}><span className="mb-1.5 block text-sm font-medium">{label}</span>{multiline ? <Textarea value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} className="min-h-20 text-base md:text-sm" /> : <Input value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} className={readOnly ? 'h-10 bg-muted/50' : 'h-10'} />}</label>; }
 
-function AddCopyDialog({ open, records, onOpenChange, onAdd }: { open: boolean; records: CatalogRecord[]; onOpenChange: (open: boolean) => void; onAdd: (sourceId: string, dbNumber: string, inventoryNumber: string) => void }) {
-  const [sourceId, setSourceId] = useState(records[0]?.id ?? ''); const [dbNumber, setDbNumber] = useState(''); const [inventoryNumber, setInventoryNumber] = useState('');
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>Добавить экземпляр</DialogTitle><DialogDescription>Выберите похожую книгу и задайте номера нового экземпляра.</DialogDescription></DialogHeader><div className="grid gap-4 py-2"><label><span className="mb-1.5 block text-sm font-medium">Карточка-образец</span><Select value={sourceId} onValueChange={(value) => value && setSourceId(value)}><SelectTrigger className="h-10 w-full"><SelectValue /></SelectTrigger><SelectContent>{records.map((record) => <SelectItem key={record.id} value={record.id}>{record.dbNumber} — {record.author} — {record.title}</SelectItem>)}</SelectContent></Select></label><Field label="№ записи в БД" value={dbNumber} onChange={setDbNumber} /><Field label="Инвентарный номер" value={inventoryNumber} onChange={setInventoryNumber} /></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button><Button disabled={!sourceId || !dbNumber.trim()} onClick={() => onAdd(sourceId, dbNumber, inventoryNumber)}>Добавить экземпляр</Button></DialogFooter></DialogContent></Dialog>;
+function AddCopyDialog({
+  open,
+  records,
+  onOpenChange,
+  onAdd,
+}: {
+  open: boolean;
+  records: CatalogRecord[];
+  onOpenChange: (open: boolean) => void;
+  onAdd: (
+    sourceId: string,
+    dbNumber: string,
+    inventoryNumber: string,
+  ) => void;
+}) {
+  const [sourceId, setSourceId] =
+    useState('__new__');
+
+  const [dbNumber, setDbNumber] =
+    useState('');
+
+  const [inventoryNumber, setInventoryNumber] =
+    useState('');
+
+  const submit = () => {
+    onAdd(
+      sourceId === '__new__' ? '' : sourceId,
+      dbNumber,
+      inventoryNumber,
+    );
+
+    setDbNumber('');
+    setInventoryNumber('');
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            Добавить экземпляр
+          </DialogTitle>
+
+          <DialogDescription>
+            Можно создать новую карточку с нуля
+            или использовать существующую книгу
+            как образец.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 py-2">
+          <label>
+            <span className="mb-1.5 block text-sm font-medium">
+              Основа новой карточки
+            </span>
+
+            <Select
+              value={sourceId}
+              onValueChange={(value) =>
+                value && setSourceId(value)
+              }
+            >
+              <SelectTrigger className="h-10 w-full">
+                <SelectValue />
+              </SelectTrigger>
+
+              <SelectContent>
+                <SelectItem value="__new__">
+                  Новая карточка с нуля
+                </SelectItem>
+
+                {records.map((record) => (
+                  <SelectItem
+                    key={record.id}
+                    value={record.id}
+                  >
+                    {record.dbNumber || 'Без номера'}
+                    {' — '}
+                    {record.author || 'Без автора'}
+                    {' — '}
+                    {record.title || 'Без заглавия'}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+
+          <Field
+            label="№ записи в БД"
+            value={dbNumber}
+            onChange={setDbNumber}
+          />
+
+          <Field
+            label="Инвентарный номер"
+            value={inventoryNumber}
+            onChange={setInventoryNumber}
+          />
+        </div>
+
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+          >
+            Отмена
+          </Button>
+
+          <Button
+            disabled={!dbNumber.trim()}
+            onClick={submit}
+          >
+            Добавить экземпляр
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function qrPayload(record: CatalogRecord) {
