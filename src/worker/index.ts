@@ -56,26 +56,14 @@ const SELECT_FIELDS = `
   updated_at AS updatedAt
 `;
 
-const SEARCH_FIELDS: Record<string, string[]> = {
-  all: [
-    "db_number",
-    "inventory_number",
-    "author",
-    "title",
-    "title_full",
-    "publisher",
-    "publication_year",
-    "subjects",
-    "keywords",
-    "shelfmark",
-    "notes",
-  ],
-  dbNumber: ["db_number"],
-  inventoryNumber: ["inventory_number"],
-  author: ["author"],
-  title: ["title"],
-  publisher: ["publisher"],
-  year: ["publication_year"],
+const SEARCH_FIELDS: Record<string, string> = {
+  all: "$.all",
+  dbNumber: "$.dbNumber",
+  inventoryNumber: "$.inventoryNumber",
+  author: "$.author",
+  title: "$.title",
+  publisher: "$.publisher",
+  year: "$.year",
 };
 
 const EDITABLE_FIELDS: Record<string, string> = {
@@ -125,6 +113,38 @@ function developmentUser(): User {
 
 function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSearch(value: unknown): string {
+  return clean(value)
+    .normalize("NFKC")
+    .toLowerCase();
+}
+
+function buildSearchText(
+  values: Record<string, unknown>,
+): string {
+  const fields = {
+    dbNumber: normalizeSearch(values.dbNumber),
+    inventoryNumber:
+      normalizeSearch(values.inventoryNumber),
+    author: normalizeSearch(values.author),
+    title: normalizeSearch(values.title),
+    titleFull: normalizeSearch(values.titleFull),
+    publisher: normalizeSearch(values.publisher),
+    year: normalizeSearch(values.year),
+    subjects: normalizeSearch(values.subjects),
+    keywords: normalizeSearch(values.keywords),
+    shelfmark: normalizeSearch(values.shelfmark),
+    notes: normalizeSearch(values.notes),
+  };
+
+  return JSON.stringify({
+    ...fields,
+    all: Object.values(fields)
+      .filter(Boolean)
+      .join("\n"),
+  });
 }
 
 function numeric(value: unknown): number {
@@ -230,20 +250,15 @@ async function getCatalog(
   }
 
   if (query) {
-    const columns =
+    const searchPath =
       SEARCH_FIELDS[field] ?? SEARCH_FIELDS.all;
 
     clauses.push(
-      `(${columns
-        .map(
-          (column) =>
-            `LOWER(${column}) LIKE LOWER(?)`,
-        )
-        .join(" OR ")})`,
+      `json_extract(search_text, '${searchPath}') LIKE ?`,
     );
 
     bindings.push(
-      ...columns.map(() => `%${query}%`),
+      `%${normalizeSearch(query)}%`,
     );
   }
 
@@ -331,13 +346,14 @@ async function createRecord(
         invoice,
         loan_status,
         loan_count,
+        search_text,
         created_at,
         updated_at
       )
       VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?
       )
     `)
     .bind(
@@ -364,6 +380,7 @@ async function createRecord(
       clean(body.invoice),
       clean(body.loanStatus) || "В наличии",
       numeric(body.loanCount),
+      buildSearchText(body),
       now,
       now,
     )
@@ -411,12 +428,49 @@ async function updateRecord(
     );
   }
 
+  const currentSearch = await env.DB
+    .prepare(`
+      SELECT
+        db_number AS dbNumber,
+        inventory_number AS inventoryNumber,
+        author,
+        title,
+        title_full AS titleFull,
+        publisher,
+        publication_year AS year,
+        subjects,
+        keywords,
+        shelfmark,
+        notes
+      FROM catalog_records
+      WHERE
+        id = ?
+        AND deleted_at IS NULL
+    `)
+    .bind(id)
+    .first<Record<string, unknown>>();
+
+  if (!currentSearch) {
+    return json(
+      { error: "Catalog record not found" },
+      404,
+    );
+  }
+
   const assignments = updates.map(
     ([key]) => `${EDITABLE_FIELDS[key]} = ?`,
   );
 
   const values = updates.map(
     ([, value]) => clean(value),
+  );
+
+  assignments.push("search_text = ?");
+  values.push(
+    buildSearchText({
+      ...currentSearch,
+      ...body,
+    }),
   );
 
   const now = new Date().toISOString();
