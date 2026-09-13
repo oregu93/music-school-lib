@@ -51,3 +51,9 @@ remove-*.mjs
 package.next-backup.json
 
 prepare-checkpoint.mjs
+
+## Local migration/import artifacts
+backups/
+import_bundle/
+import_bundle_final/
+search_01/
