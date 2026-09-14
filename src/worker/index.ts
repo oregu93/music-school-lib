@@ -556,6 +556,152 @@ async function deleteRecord(
   return json({ ok: true });
 }
 
+async function purgeRecord(
+  env: Env,
+  user: User,
+  id: number,
+): Promise<Response> {
+  if (user.role !== "admin") {
+    return json(
+      {
+        error: "Forbidden",
+        message:
+          "Окончательное удаление доступно только администратору.",
+      },
+      403,
+    );
+  }
+
+  const record = await env.DB
+    .prepare(`
+      SELECT
+        id,
+        db_number AS dbNumber,
+        title,
+        deleted_at AS deletedAt
+      FROM catalog_records
+      WHERE id = ?
+    `)
+    .bind(id)
+    .first<{
+      id: number;
+      dbNumber: string;
+      title: string;
+      deletedAt: string | null;
+    }>();
+
+  if (!record) {
+    return json(
+      { error: "Catalog record not found" },
+      404,
+    );
+  }
+
+  if (!record.deletedAt) {
+    return json(
+      {
+        error: "Record is not in trash",
+        message:
+          "Окончательно удалить можно только запись из корзины.",
+      },
+      409,
+    );
+  }
+
+  const now = new Date().toISOString();
+
+  const results = await env.DB.batch([
+    env.DB
+      .prepare(`
+        INSERT INTO purge_log (
+          record_id,
+          db_number,
+          title,
+          purged_by,
+          purged_by_email,
+          purged_at,
+          reason
+        )
+        SELECT
+          id,
+          db_number,
+          title,
+          ?,
+          ?,
+          ?,
+          'permanent_delete_from_trash'
+        FROM catalog_records
+        WHERE
+          id = ?
+          AND deleted_at IS NOT NULL
+      `)
+      .bind(
+        user.userId,
+        user.email,
+        now,
+        id,
+      ),
+
+    env.DB
+      .prepare(`
+        DELETE FROM loans
+        WHERE
+          record_id = ?
+          AND EXISTS (
+            SELECT 1
+            FROM catalog_records
+            WHERE
+              id = ?
+              AND deleted_at IS NOT NULL
+          )
+      `)
+      .bind(id, id),
+
+    env.DB
+      .prepare(`
+        DELETE FROM audit_log
+        WHERE
+          record_id = ?
+          AND EXISTS (
+            SELECT 1
+            FROM catalog_records
+            WHERE
+              id = ?
+              AND deleted_at IS NOT NULL
+          )
+      `)
+      .bind(id, id),
+
+    env.DB
+      .prepare(`
+        DELETE FROM catalog_records
+        WHERE
+          id = ?
+          AND deleted_at IS NOT NULL
+      `)
+      .bind(id),
+  ]);
+
+  const catalogDelete = results[3];
+
+  if (!catalogDelete.meta.changes) {
+    return json(
+      {
+        error: "Permanent delete conflict",
+        message:
+          "Запись больше не находится в корзине.",
+      },
+      409,
+    );
+  }
+
+  return json({
+    ok: true,
+    purged: true,
+    dbNumber: record.dbNumber,
+  });
+}
+
 async function restoreRecord(
   env: Env,
   user: User,
@@ -1698,6 +1844,17 @@ if (
           id,
         );
       }
+      if (
+        pathname === `/api/catalog/${id}/permanent` &&
+        method === "DELETE"
+      ) {
+        return purgeRecord(
+          env,
+          user,
+          id,
+        );
+      }
+
 
       if (
         pathname === `/api/catalog/${id}` &&

@@ -189,6 +189,26 @@ export function CatalogClient({ userName }: { userName: string }) {
     setSelectedId(null);
     confirmAction('Карточка перемещена в корзину. Её можно восстановить.');
   };
+  const purgeRecord = async (record: CatalogRecord) => {
+    if (
+      apiAvailable &&
+      !await apiRequest(
+        `/api/catalog/${record.id}/permanent`,
+        { method: 'DELETE' },
+        setNotice,
+      )
+    ) {
+      return;
+    }
+
+    setRecords((current) =>
+      current.filter((item) => item.id !== record.id)
+    );
+
+    setSelectedId(null);
+    setNotice('Запись удалена окончательно.');
+  };
+
   const restoreRecord = async (record: CatalogRecord) => {
     if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/restore`, { method: 'POST' }, setNotice)) return;
     setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: false } : item));
@@ -371,7 +391,7 @@ export function CatalogClient({ userName }: { userName: string }) {
   </TableCell></TableRow>)}</TableBody></Table>
       </div>
     </section>
-    <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelectedId(null); }}><SheetContent className="overflow-y-auto" style={{ width: 'min(96vw, 1480px)', maxWidth: 'none' }}>{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onLoanChange={updateLoanStatus} onLoanNotice={confirmAction} />}</SheetContent></Sheet>
+    <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelectedId(null); }}><SheetContent className="overflow-y-auto" style={{ width: 'min(96vw, 1480px)', maxWidth: 'none' }}>{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onPurge={purgeRecord} onLoanChange={updateLoanStatus} onLoanNotice={confirmAction} />}</SheetContent></Sheet>
     <AddCopyDialog open={addOpen} records={records.filter((r) => !r.deleted)} onOpenChange={setAddOpen} onAdd={addCopy} />
 
     {actionNotice && (
@@ -415,7 +435,7 @@ function loanStatusClass(
 
 function Summary({ label, value, muted }: { label: string; value: string; muted?: string }) { return <div className="rounded-xl border bg-card px-5 py-4 shadow-sm"><p className="text-sm text-muted-foreground">{label}</p><div className="mt-1 flex items-baseline gap-2"><strong className="text-2xl font-semibold">{value}</strong>{muted && <span className="text-xs text-muted-foreground">{muted}</span>}</div></div>; }
 
-function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, onRestore, onLoanChange, onLoanNotice }: { record: CatalogRecord; apiAvailable: boolean; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void; onLoanChange: (recordId: string, status: string) => void; onLoanNotice: (message: string) => void }) {
+function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, onRestore, onPurge, onLoanChange, onLoanNotice }: { record: CatalogRecord; apiAvailable: boolean; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void; onPurge: (record: CatalogRecord) => void; onLoanChange: (recordId: string, status: string) => void; onLoanNotice: (message: string) => void }) {
   const [draft, setDraft] = useState(record); const [qr, setQr] = useState('');
   const update = (key: keyof CatalogRecord, value: string) => setDraft((current) => ({ ...current, [key]: value }));
   useEffect(() => { setDraft((current) => ({ ...current, loanStatus: record.loanStatus })); }, [record.loanStatus]);
@@ -445,7 +465,7 @@ function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, 
       />
       <aside className="mt-6 flex flex-col items-center gap-4 rounded-xl border bg-muted/35 p-4 text-center sm:flex-row sm:text-left">{qr ? <img src={qr} alt="QR-код с информацией из карточки" className="aspect-square w-36 shrink-0 rounded-md bg-white" /> : <div className="aspect-square w-36 shrink-0 animate-pulse rounded-md bg-muted" />}<div><p className="font-medium">QR-код экземпляра</p><p className="mt-1 max-w-lg text-sm leading-relaxed text-muted-foreground">Содержит библиографические сведения и данные для поиска книги на полке. Личная информация читателей в QR-код не включается.</p></div></aside>
     </div>
-    <div className="sticky bottom-0 flex flex-wrap justify-between gap-2 border-t bg-background/95 px-6 py-4 backdrop-blur"><div>{record.deleted ? <Button variant="outline" className="gap-2" onClick={() => onRestore(record)}><RotateCcw /> Восстановить</Button> : <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Переместить карточку в корзину?</AlertDialogTitle><AlertDialogDescription>Карточка исчезнет из каталога, но её можно будет восстановить.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onDelete(record)}>Переместить в корзину</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</div><div className="flex flex-wrap gap-2">{!record.deleted && <Button variant="outline" onClick={() => onToggleVerified(record)}>{record.verified ? 'Снять отметку «Проверено»' : 'Отметить проверенной'}</Button>}<Button disabled={record.deleted} onClick={() => onSave(draft)}>Сохранить изменения</Button></div></div></>;
+    <div className="sticky bottom-0 flex flex-wrap justify-between gap-2 border-t bg-background/95 px-6 py-4 backdrop-blur"><div>{record.deleted ? <div className="flex flex-wrap gap-2"><Button variant="outline" className="gap-2" onClick={() => onRestore(record)}><RotateCcw /> Восстановить</Button><AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить окончательно</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Удалить запись окончательно?</AlertDialogTitle><AlertDialogDescription>Запись, история её выдач и обычный журнал изменений будут удалены без возможности восстановления. В системном журнале останется только факт окончательного удаления.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onPurge(record)}>Удалить безвозвратно</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></div> : <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Переместить карточку в корзину?</AlertDialogTitle><AlertDialogDescription>Карточка исчезнет из каталога, но её можно будет восстановить.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onDelete(record)}>Переместить в корзину</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</div><div className="flex flex-wrap gap-2">{!record.deleted && <Button variant="outline" onClick={() => onToggleVerified(record)}>{record.verified ? 'Снять отметку «Проверено»' : 'Отметить проверенной'}</Button>}<Button disabled={record.deleted} onClick={() => onSave(draft)}>Сохранить изменения</Button></div></div></>;
 }
 
 function LoanPanel({ record, apiAvailable, onStatusChange, onNotice }: { record: CatalogRecord; apiAvailable: boolean; onStatusChange: (status: string) => void; onNotice: (message: string) => void }) {
