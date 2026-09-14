@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "types": ["node", "@cloudflare/workers-types"]
+  },
+  "include": [
+    "src/client/**/*.ts",
+    "src/client/**/*.tsx",
+    "src/worker/**/*.ts",
+    "app/catalog-client.tsx",
+    "app/outbox.ts",
+    "components/ui/alert-dialog.tsx",
+    "components/ui/badge.tsx",
+    "components/ui/button.tsx",
+    "components/ui/checkbox.tsx",
+    "components/ui/dialog.tsx",
+    "components/ui/input.tsx",
+    "components/ui/select.tsx",
+    "components/ui/sheet.tsx",
+    "components/ui/table.tsx",
+    "components/ui/textarea.tsx"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

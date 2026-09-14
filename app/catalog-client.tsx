@@ -13,6 +13,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  getOutboxCounts,
+  replayPendingMutations,
+  submitMutation,
+} from './outbox';
+import type { MutationResult } from './outbox';
 
 export type CatalogRecord = {
   id: string;
@@ -81,6 +87,8 @@ export function CatalogClient({ userName }: { userName: string }) {
   const [actionNotice, setActionNotice] = useState('');
   const [actionNoticeKind, setActionNoticeKind] =
     useState<'success' | 'error'>('success');
+  const [syncCounts, setSyncCounts] = useState({ pending: 0, conflict: 0, failed: 0 });
+  const [syncEpoch, setSyncEpoch] = useState(0);
 
   useEffect(() => {
     if (!actionNotice) return;
@@ -103,6 +111,38 @@ export function CatalogClient({ userName }: { userName: string }) {
     setActionNoticeKind('error');
     setActionNotice(message);
   };
+
+  const refreshOutboxState = async () => {
+    setSyncCounts(await getOutboxCounts());
+  };
+
+  const synchronize = async () => {
+    const results = await replayPendingMutations();
+    await refreshOutboxState();
+    if (results.some((result) => result.kind === 'synced')) {
+      setRecordCache({});
+      setSyncEpoch((value) => value + 1);
+    }
+    const conflict = results.find((result) => result.kind === 'conflict');
+    if (conflict) {
+      reportActionError(
+        String(conflict.payload?.message ?? 'Обнаружен конфликт. Откройте карточку заново.'),
+      );
+    }
+  };
+
+  useEffect(() => {
+    void refreshOutboxState();
+    if (navigator.onLine) void synchronize();
+    const onOnline = () => { void synchronize(); };
+    const onOutboxChanged = () => { void refreshOutboxState(); };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('mlc-outbox-changed', onOutboxChanged);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('mlc-outbox-changed', onOutboxChanged);
+    };
+  }, []);
 
   useEffect(() => {
     if (apiAvailable === false) return;
@@ -171,7 +211,7 @@ export function CatalogClient({ userName }: { userName: string }) {
       }
     }, delay);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [apiAvailable, field, query, showDeleted, showWrittenOff]);
+  }, [apiAvailable, field, query, showDeleted, showWrittenOff, syncEpoch]);
 
   useEffect(() => {
     const modelContext = (document as Document & { modelContext?: WebModelContext }).modelContext;
@@ -269,14 +309,68 @@ export function CatalogClient({ userName }: { userName: string }) {
     setSelectedRecord(null);
   };
 
+  const mutationAccepted = async (
+    result: MutationResult,
+    recordId?: string,
+  ) => {
+    await refreshOutboxState();
+    if (result.kind === 'conflict') {
+      if (recordId) {
+        setRecordCache((current) => {
+          const next = { ...current };
+          delete next[recordId];
+          return next;
+        });
+      }
+      reportActionError(
+        String(result.payload?.message ?? 'Карточка изменилась в другом сеансе. Откройте её заново.'),
+      );
+      return false;
+    }
+    if (result.kind === 'failed') {
+      reportActionError(
+        String(result.payload?.message ?? result.payload?.error ?? 'Изменение отклонено сервером.'),
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const applyRecordPatch = (
+    recordId: string,
+    patch: Partial<CatalogRecord>,
+  ) => {
+    setRecords((current) => current.map((record) =>
+      record.id === recordId ? { ...record, ...patch } : record,
+    ));
+    setSelectedRecord((current) =>
+      current?.id === recordId ? { ...current, ...patch } : current,
+    );
+    setRecordCache((current) => current[recordId]
+      ? { ...current, [recordId]: { ...current[recordId], ...patch } }
+      : current,
+    );
+  };
+
   const saveRecord = async (next: CatalogRecord) => {
-    if (apiAvailable && !await apiRequest(`/api/catalog/${next.id}`, { method: 'PATCH', body: JSON.stringify(next) }, reportActionError)) return;
+    const result = await submitMutation({
+      entityType: 'catalog_record',
+      entityId: next.id,
+      operationType: 'catalog_update',
+      baseRevision: next.revision,
+      method: 'PATCH',
+      url: `/api/catalog/${next.id}`,
+      payload: { ...next, baseRevision: next.revision },
+    });
+    if (!await mutationAccepted(result, next.id)) return;
+    const revision = Number(result.payload?.revision ?? next.revision + 1);
     const saved = {
       ...next,
       verified: next.verified,
       verifiedAt: next.verifiedAt,
       deleted: next.deleted,
       loanStatus: next.loanStatus,
+      revision,
     };
 
     setRecords((current) =>
@@ -296,14 +390,25 @@ export function CatalogClient({ userName }: { userName: string }) {
       [next.id]: saved,
     }));
 
-    confirmAction(
-      `Карточка ${next.inventoryNumber || next.dbNumber || 'без номера'} сохранена.`,
-    );
+    confirmAction(result.kind === 'queued'
+      ? 'Изменение сохранено на этом устройстве и ожидает синхронизации.'
+      : `Карточка ${next.inventoryNumber || next.dbNumber || 'без номера'} сохранена.`);
   };
   const toggleVerifiedRecord = async (record: CatalogRecord) => {
     const verified = !record.verified;
-    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/verify`, { method: 'POST', body: JSON.stringify({ verified }) }, reportActionError)) return;
-    const next = { ...record, verified, verifiedAt: verified ? new Date().toLocaleDateString('ru-RU') : undefined };
+    const result = await submitMutation({
+      entityType: 'catalog_record', entityId: record.id,
+      operationType: 'catalog_verify', baseRevision: record.revision,
+      method: 'POST', url: `/api/catalog/${record.id}/verify`,
+      payload: { verified, baseRevision: record.revision },
+    });
+    if (!await mutationAccepted(result, record.id)) return;
+    const next = {
+      ...record,
+      verified,
+      verifiedAt: verified ? new Date().toLocaleDateString('ru-RU') : undefined,
+      revision: Number(result.payload?.revision ?? record.revision + 1),
+    };
     setRecords((current) =>
       current.map((item) => item.id === next.id ? next : item)
     );
@@ -313,21 +418,36 @@ export function CatalogClient({ userName }: { userName: string }) {
       [next.id]: next,
     }));
     setServerStats((current) => current ? { ...current, verified: Math.max(0, current.verified + (verified ? 1 : -1)) } : null);
-    confirmAction(
+    confirmAction(result.kind === 'queued'
+      ? 'Отметка сохранена на этом устройстве и ожидает синхронизации.'
+      :
       verified
         ? `Карточка № ${record.dbNumber || 'без номера'} проверена.`
-        : `Отметка «Проверено» снята с карточки № ${record.dbNumber || 'без номера'}.`,
-    );
+        : `Отметка «Проверено» снята с карточки № ${record.dbNumber || 'без номера'}.`);
   };
   const deleteRecord = async (record: CatalogRecord) => {
-    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}`, { method: 'DELETE' }, reportActionError)) return;
-    setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: true } : item));
+    const result = await submitMutation({
+      entityType: 'catalog_record', entityId: record.id,
+      operationType: 'catalog_delete', baseRevision: record.revision,
+      method: 'DELETE', url: `/api/catalog/${record.id}`,
+      payload: { baseRevision: record.revision },
+    });
+    if (!await mutationAccepted(result, record.id)) return;
+    applyRecordPatch(record.id, {
+      deleted: true,
+      revision: Number(result.payload?.revision ?? record.revision + 1),
+    });
     closeRecord();
-    confirmAction('Карточка перемещена в корзину. Её можно восстановить.');
+    confirmAction(result.kind === 'queued'
+      ? 'Удаление сохранено на этом устройстве и ожидает синхронизации.'
+      : 'Карточка перемещена в корзину. Её можно восстановить.');
   };
   const purgeRecord = async (record: CatalogRecord) => {
+    if (!apiAvailable) {
+      reportActionError('Окончательное удаление требует устойчивого соединения с сервером.');
+      return;
+    }
     if (
-      apiAvailable &&
       !await apiRequest(
         `/api/catalog/${record.id}/permanent`,
         { method: 'DELETE' },
@@ -351,13 +471,24 @@ export function CatalogClient({ userName }: { userName: string }) {
   };
 
   const restoreRecord = async (record: CatalogRecord) => {
-    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/restore`, { method: 'POST' }, reportActionError)) return;
-    setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: false } : item));
+    const result = await submitMutation({
+      entityType: 'catalog_record', entityId: record.id,
+      operationType: 'catalog_restore', baseRevision: record.revision,
+      method: 'POST', url: `/api/catalog/${record.id}/restore`,
+      payload: { baseRevision: record.revision },
+    });
+    if (!await mutationAccepted(result, record.id)) return;
+    applyRecordPatch(record.id, {
+      deleted: false,
+      revision: Number(result.payload?.revision ?? record.revision + 1),
+    });
     closeRecord();
-    confirmAction('Карточка восстановлена в каталоге.');
+    confirmAction(result.kind === 'queued'
+      ? 'Восстановление сохранено на этом устройстве и ожидает синхронизации.'
+      : 'Карточка восстановлена в каталоге.');
   };
-  const updateLoanStatus = (recordId: string, loanStatus: string) => {
-    setRecords((current) => current.map((record) => record.id === recordId ? { ...record, loanStatus } : record));
+  const updateLoanStatus = (recordId: string, loanStatus: string, revision: number) => {
+    applyRecordPatch(recordId, { loanStatus, revision });
   };
   const addCopy = async (
     sourceId: string,
@@ -381,6 +512,7 @@ export function CatalogClient({ userName }: { userName: string }) {
           deleted: false,
           state: 'В фонде',
           loanStatus: 'В наличии',
+          revision: 1,
         }
       : {
           id: crypto.randomUUID(),
@@ -409,77 +541,44 @@ export function CatalogClient({ userName }: { userName: string }) {
           verified: false,
           verifiedAt: undefined,
           deleted: false,
+          revision: 1,
         };
 
-    if (apiAvailable) {
-      let response: Response;
-
-      try {
-        response = await fetch('/api/catalog', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-          body: JSON.stringify(next),
-        });
-      } catch {
-        reportActionError(
-          'Нет связи с базой. Экземпляр не добавлен.',
-        );
-        return;
-      }
-
-      if (!response.ok) {
-        const payload = await response
-          .json()
-          .catch(() => ({})) as { error?: string };
-
-        reportActionError(
-          payload.error ??
-            'Не удалось добавить экземпляр. Изменения не сохранены.',
-        );
-        return;
-      }
-
-      const payload = await response.json() as {
-        record: Record<string, unknown>;
-      };
-
-      const saved = normalizeRecord(payload.record);
-
-      setRecords((current) => [...current, saved]);
-      setServerStats((current) =>
-        current
-          ? {
-              ...current,
-              total: current.total + 1,
-              active: current.active + 1,
-            }
-          : current,
-      );
-
-      setAddOpen(false);
-      setSelectedId(saved.id);
-      confirmAction(
-      `Экземпляр № ${saved.dbNumber || 'без номера'} добавлен.`,
+    const result = await submitMutation({
+      entityType: 'catalog_record',
+      operationType: 'catalog_create',
+      method: 'POST',
+      url: '/api/catalog',
+      payload: next,
+    });
+    if (!await mutationAccepted(result)) return;
+    const saved = result.kind === 'synced' && result.payload?.record
+      ? normalizeRecord(result.payload.record as Record<string, unknown>)
+      : next;
+    setRecords((current) => [...current, saved]);
+    setServerStats((current) => current
+      ? { ...current, total: current.total + 1, active: current.active + 1 }
+      : current,
     );
-
-      return;
-    }
-
-    setRecords((current) => [...current, next]);
     setAddOpen(false);
-    setSelectedId(next.id);
-    confirmAction(
-      `Экземпляр № ${next.dbNumber || 'без номера'} добавлен.`,
-    );
+    setSelectedId(saved.id);
+    confirmAction(result.kind === 'queued'
+      ? 'Новый экземпляр сохранён на этом устройстве и ожидает синхронизации.'
+      : `Экземпляр № ${saved.dbNumber || 'без номера'} добавлен.`);
   };
-  const exportCsv = () => {
-    const active = records.filter((record) => !record.deleted);
-    const headers = ['Инвентарный номер', '№ записи в БД', 'Автор', 'Заглавие', 'Издательство', 'Год', 'Шифр хранения', 'Местонахождение', 'Статус', 'Проверено'];
-    const rows = active.map((record) => [record.inventoryNumber, record.dbNumber, record.author, record.title, record.publisher, record.year, record.shelfmark, record.location, record.loanStatus, record.verified ? 'Да' : 'Нет']);
-    const csv = [headers, ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(';')).join('\r\n');
-    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' })); link.download = 'library_catalog.csv'; link.click(); URL.revokeObjectURL(link.href);
+  const exportCsv = async () => {
+    try {
+      const response = await fetch('/api/export/catalog.csv');
+      if (!response.ok) throw new Error('export_failed');
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(await response.blob());
+      link.download = 'library_catalog_full.csv';
+      link.click();
+      URL.revokeObjectURL(link.href);
+      confirmAction('Полная выгрузка каталога подготовлена.');
+    } catch {
+      reportActionError('Не удалось подготовить полную выгрузку каталога.');
+    }
   };
 
   const activeCount = serverStats?.active ?? records.filter((record) => !record.deleted && record.state === 'В фонде').length;
@@ -517,7 +616,29 @@ export function CatalogClient({ userName }: { userName: string }) {
   </div></div></header>
     <section className="mx-auto max-w-[1600px] p-4 lg:p-8">
       <div className={noticeIsSuccess ? 'mb-4 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950' : 'mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950'} role="status">{notice}</div>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3 text-sm">
+        <strong>{syncCounts.conflict > 0
+          ? `Конфликт: ${syncCounts.conflict}`
+          : syncCounts.failed > 0
+            ? 'Ошибка синхронизации'
+            : syncCounts.pending > 0
+              ? `Ожидает синхронизации: ${syncCounts.pending}`
+              : 'Синхронизировано'}</strong>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={syncCounts.pending === 0}
+          onClick={() => void synchronize()}
+        >
+          Синхронизировать
+        </Button>
+      </div>
       <div className="mb-5 grid gap-3 sm:grid-cols-3"><Summary label="Экземпляров" value={String(totalCount)} muted={apiAvailable ? undefined : 'в демонстрации'} /><Summary label="В фонде" value={String(activeCount)} /><Summary label="Проверено" value={String(verifiedCount)} /></div>
+      <InventoryPanel
+        onOpenRecord={(recordId) => { void openRecord(recordId); }}
+        onNotice={confirmAction}
+        onError={reportActionError}
+      />
       <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
         <div className="flex flex-col gap-3 border-b p-4 xl:flex-row xl:items-center">
           <div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Автор, заглавие, номер…" className="h-11 pl-10 text-base" aria-label="Поиск по каталогу" /></div>
@@ -593,7 +714,167 @@ function loanStatusClass(
 
 function Summary({ label, value, muted }: { label: string; value: string; muted?: string }) { return <div className="rounded-xl border bg-card px-5 py-4 shadow-sm"><p className="text-sm text-muted-foreground">{label}</p><div className="mt-1 flex items-baseline gap-2"><strong className="text-2xl font-semibold">{value}</strong>{muted && <span className="text-xs text-muted-foreground">{muted}</span>}</div></div>; }
 
-function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, onRestore, onPurge, onLoanChange, onLoanNotice }: { record: CatalogRecord; apiAvailable: boolean; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void; onPurge: (record: CatalogRecord) => void; onLoanChange: (recordId: string, status: string) => void; onLoanNotice: (message: string) => void }) {
+type InventorySession = {
+  id: string;
+  name: string;
+  status: string;
+  seenCount: number;
+};
+
+function InventoryPanel({
+  onOpenRecord,
+  onNotice,
+  onError,
+}: {
+  onOpenRecord: (recordId: string) => void;
+  onNotice: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [session, setSession] = useState<InventorySession | null>(null);
+  const [inventoryNumber, setInventoryNumber] = useState('');
+  const [candidates, setCandidates] = useState<CatalogRecord[]>([]);
+  const [seenIds, setSeenIds] = useState<Set<string>>(() => new Set());
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/inventory/current')
+      .then(async (response) => response.ok
+        ? response.json() as Promise<{ session: InventorySession | null }>
+        : { session: null })
+      .then((payload) => setSession(payload.session))
+      .catch(() => undefined);
+  }, []);
+
+  const startSession = async () => {
+    const sessionId = crypto.randomUUID();
+    const created: InventorySession = {
+      id: sessionId,
+      name: `Инвентаризация ${new Date().toLocaleDateString('ru-RU')}`,
+      status: 'open',
+      seenCount: 0,
+    };
+    const result = await submitMutation({
+      entityType: 'inventory_session', entityId: sessionId,
+      operationType: 'inventory_session_create', method: 'POST',
+      url: '/api/inventory/sessions',
+      payload: { sessionId, name: created.name },
+    });
+    if (result.kind === 'failed' || result.kind === 'conflict') {
+      onError(String(result.payload?.message ?? 'Не удалось начать инвентаризацию.'));
+      return;
+    }
+    setSession(created);
+    onNotice(result.kind === 'queued'
+      ? 'Инвентаризация создана на этом устройстве и ожидает синхронизации.'
+      : 'Инвентаризация начата.');
+  };
+
+  const markSeen = async (record: CatalogRecord) => {
+    if (!session || seenIds.has(record.id)) {
+      onNotice('Этот экземпляр уже отмечен в текущей инвентаризации.');
+      return;
+    }
+    const result = await submitMutation({
+      entityType: 'inventory_event', entityId: record.id,
+      operationType: 'inventory_seen', method: 'POST',
+      url: '/api/inventory/seen',
+      payload: { sessionId: session.id, recordId: record.id },
+    });
+    if (result.kind === 'failed' || result.kind === 'conflict') {
+      onError(String(result.payload?.message ?? 'Не удалось отметить экземпляр.'));
+      return;
+    }
+    setSeenIds((current) => new Set(current).add(record.id));
+    setSession((current) => current
+      ? { ...current, seenCount: current.seenCount + (result.payload?.duplicate ? 0 : 1) }
+      : current,
+    );
+    setCandidates([]);
+    setInventoryNumber('');
+    onNotice(result.kind === 'queued'
+      ? 'Отметка сохранена на этом устройстве и ожидает синхронизации.'
+      : result.payload?.duplicate
+        ? 'Этот экземпляр уже отмечен в текущей инвентаризации.'
+        : `Экземпляр ${record.inventoryNumber || record.dbNumber} отмечен.`);
+  };
+
+  const lookup = async () => {
+    const value = inventoryNumber.trim();
+    if (!value || !session) return;
+    setBusy(true);
+    try {
+      const params = new URLSearchParams({
+        q: value,
+        field: 'inventoryNumber',
+        writtenOff: '1',
+        limit: '200',
+      });
+      const response = await fetch(`/api/catalog?${params}`);
+      if (!response.ok) throw new Error('lookup_failed');
+      const payload = await response.json() as { items: Array<Record<string, unknown>> };
+      const matches = payload.items.map(normalizeRecord);
+      if (matches.length === 0) {
+        setCandidates([]);
+        onError('Экземпляр с таким инвентарным номером не найден.');
+      } else if (matches.length === 1) {
+        onOpenRecord(matches[0].id);
+        await markSeen(matches[0]);
+      } else {
+        setCandidates(matches);
+        onNotice(`Найдено несколько экземпляров: ${matches.length}. Выберите нужный.`);
+      }
+    } catch {
+      onError('Для поиска экземпляра требуется связь с сервером.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportEvents = () => {
+    window.location.href = '/api/export/inventory.csv';
+  };
+
+  return <section className="mb-5 rounded-2xl border bg-card p-4 shadow-sm">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 className="font-semibold">Инвентаризация</h2>
+        <p className="text-sm text-muted-foreground">
+          {session ? `${session.name} · отмечено: ${session.seenCount}` : 'Активная инвентаризация не начата'}
+        </p>
+      </div>
+      <div className="flex gap-2">
+        {!session && <Button onClick={() => void startSession()}>Начать</Button>}
+        <Button variant="outline" onClick={exportEvents}><Download /> События CSV</Button>
+      </div>
+    </div>
+    {session && <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+      <Input
+        value={inventoryNumber}
+        autoComplete="off"
+        autoFocus
+        placeholder="Сканируйте или введите инвентарный номер"
+        aria-label="Инвентарный номер для инвентаризации"
+        onChange={(event) => setInventoryNumber(event.target.value)}
+        onKeyDown={(event) => { if (event.key === 'Enter') void lookup(); }}
+      />
+      <Button disabled={busy || !inventoryNumber.trim()} onClick={() => void lookup()}>
+        Найти и отметить
+      </Button>
+    </div>}
+    {candidates.length > 1 && <div className="mt-3 grid gap-2">
+      {candidates.map((record) => <button
+        key={record.id}
+        type="button"
+        className="rounded-lg border px-3 py-2 text-left hover:bg-muted"
+        onClick={() => { onOpenRecord(record.id); void markSeen(record); }}
+      >
+        <strong>{record.inventoryNumber}</strong> · № БД {record.dbNumber || '—'} · {record.author || 'Без автора'} · {record.title}
+      </button>)}
+    </div>}
+  </section>;
+}
+
+function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, onRestore, onPurge, onLoanChange, onLoanNotice }: { record: CatalogRecord; apiAvailable: boolean; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void; onPurge: (record: CatalogRecord) => void; onLoanChange: (recordId: string, status: string, revision: number) => void; onLoanNotice: (message: string) => void }) {
   const [draft, setDraft] = useState(record); const [qr, setQr] = useState('');
   const update = (key: keyof CatalogRecord, value: string) => setDraft((current) => ({ ...current, [key]: value }));
   useEffect(() => { setDraft((current) => ({ ...current, loanStatus: record.loanStatus })); }, [record.loanStatus]);
@@ -618,7 +899,7 @@ function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, 
       <LoanPanel
         record={record}
         apiAvailable={apiAvailable}
-        onStatusChange={(status) => onLoanChange(record.id, status)}
+        onStatusChange={(status, revision) => onLoanChange(record.id, status, revision)}
         onNotice={onLoanNotice}
       />
       <aside className="mt-6 flex flex-col items-center gap-4 rounded-xl border bg-muted/35 p-4 text-center sm:flex-row sm:text-left">{qr ? <img src={qr} alt="QR-код с информацией из карточки" className="aspect-square w-36 shrink-0 rounded-md bg-white" /> : <div className="aspect-square w-36 shrink-0 animate-pulse rounded-md bg-muted" />}<div><p className="font-medium">QR-код экземпляра</p><p className="mt-1 max-w-lg text-sm leading-relaxed text-muted-foreground">Содержит библиографические сведения и данные для поиска книги на полке. Личная информация читателей в QR-код не включается.</p></div></aside>
@@ -626,7 +907,7 @@ function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, 
     <div className="sticky bottom-0 flex flex-wrap justify-between gap-2 border-t bg-background/95 px-6 py-4 backdrop-blur"><div>{record.deleted ? <div className="flex flex-wrap gap-2"><Button variant="outline" className="gap-2" onClick={() => onRestore(record)}><RotateCcw /> Восстановить</Button><AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить окончательно</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Удалить запись окончательно?</AlertDialogTitle><AlertDialogDescription>Запись, история её выдач и обычный журнал изменений будут удалены без возможности восстановления. В системном журнале останется только факт окончательного удаления.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onPurge(record)}>Удалить безвозвратно</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></div> : <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Переместить карточку в корзину?</AlertDialogTitle><AlertDialogDescription>Карточка исчезнет из каталога, но её можно будет восстановить.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onDelete(record)}>Переместить в корзину</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</div><div className="flex flex-wrap gap-2">{!record.deleted && <Button variant="outline" onClick={() => onToggleVerified(record)}>{record.verified ? 'Снять отметку «Проверено»' : 'Отметить проверенной'}</Button>}<Button disabled={record.deleted} onClick={() => onSave(draft)}>Сохранить изменения</Button></div></div></>;
 }
 
-function LoanPanel({ record, apiAvailable, onStatusChange, onNotice }: { record: CatalogRecord; apiAvailable: boolean; onStatusChange: (status: string) => void; onNotice: (message: string) => void }) {
+function LoanPanel({ record, apiAvailable, onStatusChange, onNotice }: { record: CatalogRecord; apiAvailable: boolean; onStatusChange: (status: string, revision: number) => void; onNotice: (message: string) => void }) {
   const [items, setItems] = useState<LoanEntry[]>(() => demoLoans(record));
   const [readerNote, setReaderNote] = useState('');
   const [readerId, setReaderId] = useState('');
@@ -653,25 +934,38 @@ function LoanPanel({ record, apiAvailable, onStatusChange, onNotice }: { record:
     if (!note) { setError(action === 'issue' ? 'Укажите, кому выдан экземпляр.' : 'Укажите, кто сдал экземпляр.'); return; }
     setBusy(true); setError('');
     try {
+      const result = await submitMutation({
+        entityType: 'catalog_record', entityId: record.id,
+        operationType: action === 'issue' ? 'loan_issue' : 'loan_return',
+        baseRevision: record.revision,
+        method: 'POST', url: `/api/catalog/${record.id}/loans`,
+        payload: { action, readerNote, readerId, returnNote, baseRevision: record.revision },
+      });
+      if (result.kind === 'conflict' || result.kind === 'failed') {
+        throw new Error(String(
+          result.payload?.message ?? result.payload?.error ?? 'Операция не сохранена',
+        ));
+      }
       let loan: LoanEntry;
-      if (apiAvailable) {
-        const response = await fetch(`/api/catalog/${record.id}/loans`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, readerNote, readerId, returnNote }) });
-        const payload = await response.json() as { error?: string; loan?: Record<string, unknown>; loanStatus?: string };
-        if (!response.ok || !payload.loan) throw new Error(payload.error || 'Операция не сохранена');
-        loan = normalizeLoan(payload.loan);
+      if (result.kind === 'synced' && result.payload?.loan) {
+        loan = normalizeLoan(result.payload.loan as Record<string, unknown>);
       } else if (action === 'issue') {
         loan = { id: crypto.randomUUID(), readerId: readerId.trim(), readerNote: readerNote.trim(), loanDate: new Date().toISOString(), returnDate: '', returnNote: '', issuedBy: 'Библиотекарь', returnedBy: '' };
       } else {
         loan = { ...active!, returnDate: new Date().toISOString(), returnNote: returnNote.trim(), returnedBy: 'Библиотекарь' };
       }
       setItems((current) => action === 'issue' ? [loan, ...current] : current.map((item) => item.id === loan.id ? loan : item));
-      onStatusChange(action === 'issue' ? 'Выдана' : 'В наличии');
+      onStatusChange(
+        action === 'issue' ? 'Выдана' : 'В наличии',
+        Number(result.payload?.revision ?? record.revision + 1),
+      );
 
-      onNotice(
+      onNotice(result.kind === 'queued'
+        ? 'Операция сохранена на этом устройстве и ожидает синхронизации.'
+        :
         action === 'issue'
           ? `Экземпляр № ${record.dbNumber || 'без номера'} выдан.`
-          : `Возврат экземпляра № ${record.dbNumber || 'без номера'} принят.`,
-      );
+          : `Возврат экземпляра № ${record.dbNumber || 'без номера'} принят.`);
 
       setReaderNote('');
       setReaderId('');

@@ -7,6 +7,9 @@
     "dev": "vite --mode mlc-staging",
     "build": "vite build --mode mlc-staging",
     "preview": "vite preview",
+    "test:launch": "bash scripts/test-database.sh && node scripts/test-launch.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.launch.json",
+    "launch:check": "pnpm test:launch && pnpm typecheck && pnpm build",
     "cf-typegen": "wrangler types --config wrangler.staging.jsonc",
     "build:staging": "vite build --mode mlc-staging",
     "build:production": "vite build --mode mlc-production",
@@ -29,6 +32,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.0.0",
+    "@cloudflare/workers-types": "4.20260515.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^22.0.0",
     "@types/qrcode": "^1.5.5",

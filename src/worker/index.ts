@@ -232,6 +232,220 @@ function auditStatement(
     );
 }
 
+type OperationEnvelope = {
+  operationId: string;
+  deviceId: string;
+  createdAt: string | null;
+};
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function baseRevisionFrom(
+  body: Record<string, unknown>,
+  required = false,
+): number | null | Response {
+  if (body.baseRevision === undefined && !required) return null;
+  if (
+    !Number.isSafeInteger(body.baseRevision) ||
+    Number(body.baseRevision) < 1
+  ) {
+    return json(
+      {
+        error: "invalid_base_revision",
+        message: "Некорректная версия карточки.",
+      },
+      400,
+    );
+  }
+  return Number(body.baseRevision);
+}
+
+function operationFrom(
+  body: Record<string, unknown>,
+): OperationEnvelope | null | Response {
+  if (body.operationId === undefined) return null;
+  const operationId = clean(body.operationId);
+  const deviceId = clean(body.deviceId);
+  if (!UUID_PATTERN.test(operationId) || !UUID_PATTERN.test(deviceId)) {
+    return json(
+      {
+        error: "invalid_operation_envelope",
+        message: "Некорректный идентификатор операции или устройства.",
+      },
+      400,
+    );
+  }
+  const createdAt = clean(body.createdAt);
+  return {
+    operationId,
+    deviceId,
+    createdAt: createdAt || null,
+  };
+}
+
+async function replayedOperation(
+  env: Env,
+  user: User,
+  operation: OperationEnvelope | null,
+  operationType: string,
+): Promise<Response | null> {
+  if (!operation) return null;
+  const existing = await env.DB
+    .prepare(`
+      SELECT
+        actor_user_id AS actorUserId,
+        operation_type AS operationType,
+        result_payload AS resultPayload
+      FROM sync_operations
+      WHERE operation_id = ?
+    `)
+    .bind(operation.operationId)
+    .first<{
+      actorUserId: string;
+      operationType: string;
+      resultPayload: string;
+    }>();
+  if (!existing) return null;
+  if (
+    existing.actorUserId !== user.userId ||
+    existing.operationType !== operationType
+  ) {
+    return json(
+      {
+        error: "operation_id_conflict",
+        message: "Идентификатор операции уже использован.",
+      },
+      409,
+    );
+  }
+  const payload = JSON.parse(existing.resultPayload || "{}") as Record<string, unknown>;
+  if (operationType === "catalog_create" && payload.recordId) {
+    const record = await env.DB
+      .prepare(`SELECT ${SELECT_FIELDS} FROM catalog_records WHERE id = ?`)
+      .bind(payload.recordId)
+      .first();
+    return record ? json({ record }, 201) : json(payload);
+  }
+  if (
+    (operationType === "loan_issue" || operationType === "loan_return") &&
+    payload.loanId
+  ) {
+    const loan = await env.DB
+      .prepare(`
+        SELECT
+          id, reader_id AS readerId, reader_note AS readerNote,
+          loan_date AS loanDate, return_date AS returnDate,
+          return_note AS returnNote, issued_by AS issuedBy,
+          returned_by AS returnedBy
+        FROM loans
+        WHERE id = ?
+      `)
+      .bind(payload.loanId)
+      .first();
+    return json({
+      ok: true,
+      revision: payload.revision,
+      loanStatus: operationType === "loan_issue" ? "Выдана" : "В наличии",
+      loan,
+    });
+  }
+  return json(payload, operationType === "inventory_session_create" ? 201 : 200);
+}
+
+function syncSuccessStatement(
+  env: Env,
+  operation: OperationEnvelope,
+  user: User,
+  entityType: string,
+  entityId: string,
+  operationType: string,
+  baseRevision: number | null,
+  payload: unknown,
+) {
+  const now = new Date().toISOString();
+  return env.DB
+    .prepare(`
+      INSERT INTO sync_operations (
+        operation_id, device_id, actor_user_id, entity_type, entity_id,
+        operation_type, base_revision, request_payload, result_payload,
+        result_status, created_at_client, received_at_server, completed_at_server
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, '{}', ?, 'succeeded', ?, ?, ?
+      WHERE changes() = 1
+    `)
+    .bind(
+      operation.operationId,
+      operation.deviceId,
+      user.userId,
+      entityType,
+      entityId,
+      operationType,
+      baseRevision,
+      JSON.stringify(payload),
+      operation.createdAt,
+      now,
+      now,
+    );
+}
+
+function deviceSuccessStatement(
+  env: Env,
+  operation: OperationEnvelope,
+  user: User,
+) {
+  const now = new Date().toISOString();
+  return env.DB
+    .prepare(`
+      INSERT INTO client_devices (
+        device_id, created_by_user_id, label, platform, enabled,
+        first_seen_at, last_seen_at
+      )
+      SELECT ?, ?, '', '', 1, ?, ?
+      WHERE EXISTS (
+        SELECT 1 FROM sync_operations WHERE operation_id = ?
+      )
+      ON CONFLICT(device_id) DO UPDATE SET
+        last_seen_at = excluded.last_seen_at
+    `)
+    .bind(
+      operation.deviceId,
+      user.userId,
+      now,
+      now,
+      operation.operationId,
+    );
+}
+
+function revisionConflict(
+  expectedRevision: number,
+  currentRevision: number,
+): Response {
+  return json(
+    {
+      error: "revision_conflict",
+      message: "Карточка была изменена в другом сеансе. Перезагрузите актуальные данные; ваши правки сохранены локально.",
+      expectedRevision,
+      currentRevision,
+    },
+    409,
+  );
+}
+
+async function currentRevision(
+  env: Env,
+  id: number,
+): Promise<{ revision: number; deletedAt: string | null } | null> {
+  return env.DB
+    .prepare(`
+      SELECT revision, deleted_at AS deletedAt
+      FROM catalog_records
+      WHERE id = ?
+    `)
+    .bind(id)
+    .first<{ revision: number; deletedAt: string | null }>();
+}
+
 async function getCatalog(
   request: Request,
   env: Env,
@@ -393,6 +607,17 @@ async function createRecord(
   const body =
     await request.json() as Record<string, unknown>;
 
+  const operationValue = operationFrom(body);
+  if (operationValue instanceof Response) return operationValue;
+  const operation = operationValue;
+  const replay = await replayedOperation(
+    env,
+    user,
+    operation,
+    "catalog_create",
+  );
+  if (replay) return replay;
+
   const now = new Date().toISOString();
 
   const createStatement = env.DB
@@ -460,34 +685,83 @@ async function createRecord(
       now,
     );
 
-  const results = await env.DB.batch([
-    createStatement,
-    env.DB
-      .prepare(`
-        INSERT INTO audit_log (
-          record_id,
-          action,
-          changes_json,
-          actor_id,
-          actor_email,
-          created_at
-        )
-        VALUES (
-          last_insert_rowid(),
-          'create',
-          ?,
-          ?,
-          ?,
-          ?
-        )
-      `)
-      .bind(
-        JSON.stringify(body),
-        user.userId,
-        user.email,
-        now,
-      ),
-  ]);
+  let results;
+  try {
+    results = operation
+      ? await env.DB.batch([
+          createStatement,
+          env.DB
+            .prepare(`
+              INSERT INTO sync_operations (
+                operation_id, device_id, actor_user_id, entity_type,
+                entity_id, operation_type, base_revision, request_payload,
+                result_payload, result_status, created_at_client,
+                received_at_server, completed_at_server
+              )
+              VALUES (
+                ?, ?, ?, 'catalog_record', CAST(last_insert_rowid() AS TEXT),
+                'catalog_create', NULL, ?,
+                json_object(
+                  'ok', json('true'),
+                  'recordId', CAST(last_insert_rowid() AS TEXT),
+                  'revision', 1
+                ),
+                'succeeded', ?, ?, ?
+              )
+            `)
+            .bind(
+              operation.operationId,
+              operation.deviceId,
+              user.userId,
+              JSON.stringify(body),
+              operation.createdAt,
+              now,
+              now,
+            ),
+          deviceSuccessStatement(env, operation, user),
+          env.DB
+            .prepare(`
+              INSERT INTO audit_log (
+                record_id, action, changes_json, actor_id, actor_email, created_at
+              )
+              SELECT CAST(entity_id AS INTEGER), 'create', ?, ?, ?, ?
+              FROM sync_operations
+              WHERE operation_id = ?
+            `)
+            .bind(
+              JSON.stringify(body),
+              user.userId,
+              user.email,
+              now,
+              operation.operationId,
+            ),
+        ])
+      : await env.DB.batch([
+          createStatement,
+          env.DB
+            .prepare(`
+              INSERT INTO audit_log (
+                record_id, action, changes_json, actor_id, actor_email, created_at
+              )
+              VALUES (last_insert_rowid(), 'create', ?, ?, ?, ?)
+            `)
+            .bind(
+              JSON.stringify(body),
+              user.userId,
+              user.email,
+              now,
+            ),
+        ]);
+  } catch (error) {
+    const duplicate = await replayedOperation(
+      env,
+      user,
+      operation,
+      "catalog_create",
+    );
+    if (duplicate) return duplicate;
+    throw error;
+  }
 
   const id = Number(
     results[0].meta.last_row_id,
@@ -514,6 +788,20 @@ async function updateRecord(
   const body =
     await request.json() as Record<string, unknown>;
 
+  const operationValue = operationFrom(body);
+  if (operationValue instanceof Response) return operationValue;
+  const operation = operationValue;
+  const baseValue = baseRevisionFrom(body, Boolean(operation));
+  if (baseValue instanceof Response) return baseValue;
+  const baseRevision = baseValue;
+  const replay = await replayedOperation(
+    env,
+    user,
+    operation,
+    "catalog_update",
+  );
+  if (replay) return replay;
+
   const updates = Object.entries(body)
     .filter(([key]) => EDITABLE_FIELDS[key]);
 
@@ -537,7 +825,8 @@ async function updateRecord(
         subjects,
         keywords,
         shelfmark,
-        notes
+        notes,
+        revision
       FROM catalog_records
       WHERE
         id = ?
@@ -581,51 +870,103 @@ async function updateRecord(
       WHERE
         id = ?
         AND deleted_at IS NULL
+        ${baseRevision === null ? "" : "AND revision = ?"}
     `)
     .bind(
       ...values,
       now,
       id,
+      ...(baseRevision === null ? [] : [baseRevision]),
     );
 
-  const results = await env.DB.batch([
-    mutation,
-    auditStatement(
+  const nextRevision = baseRevision === null
+    ? Number(currentSearch.revision) + 1
+    : baseRevision + 1;
+  const changes = Object.fromEntries(updates);
+  let results;
+  try {
+    results = operation
+      ? await env.DB.batch([
+          mutation,
+          syncSuccessStatement(
+            env,
+            operation,
+            user,
+            "catalog_record",
+            String(id),
+            "catalog_update",
+            baseRevision,
+            { ok: true, revision: nextRevision },
+          ),
+          deviceSuccessStatement(env, operation, user),
+          auditStatement(
+            env,
+            id,
+            "update",
+            changes,
+            user,
+            now,
+            "EXISTS (SELECT 1 FROM sync_operations WHERE operation_id = ?)",
+            [operation.operationId],
+          ),
+        ])
+      : await env.DB.batch([
+          mutation,
+          auditStatement(
+            env,
+            id,
+            "update",
+            changes,
+            user,
+            now,
+            "changes() = 1",
+          ),
+        ]);
+  } catch (error) {
+    const duplicate = await replayedOperation(
       env,
-      id,
-      "update",
-      body,
       user,
-      now,
-      `EXISTS (
-        SELECT 1
-        FROM catalog_records
-        WHERE
-          id = ?
-          AND deleted_at IS NULL
-          AND updated_at = ?
-      )`,
-      [id, now],
-    ),
-  ]);
+      operation,
+      "catalog_update",
+    );
+    if (duplicate) return duplicate;
+    throw error;
+  }
 
   const result = results[0];
 
   if (!result.meta.changes) {
+    const current = await currentRevision(env, id);
+    if (current && !current.deletedAt && baseRevision !== null) {
+      return revisionConflict(baseRevision, current.revision);
+    }
     return json(
       { error: "Catalog record not found" },
       404,
     );
   }
 
-  return json({ ok: true });
+  const revision = baseRevision === null
+    ? (await currentRevision(env, id))?.revision ?? nextRevision
+    : nextRevision;
+  return json({ ok: true, revision });
 }
 
 async function deleteRecord(
+  request: Request,
   env: Env,
   user: User,
   id: number,
 ): Promise<Response> {
+  const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const operationValue = operationFrom(body);
+  if (operationValue instanceof Response) return operationValue;
+  const operation = operationValue;
+  const baseValue = baseRevisionFrom(body, Boolean(operation));
+  if (baseValue instanceof Response) return baseValue;
+  const baseRevision = baseValue;
+  const replay = await replayedOperation(env, user, operation, "catalog_delete");
+  if (replay) return replay;
   const now = new Date().toISOString();
 
   const mutation = env.DB
@@ -639,45 +980,58 @@ async function deleteRecord(
       WHERE
         id = ?
         AND deleted_at IS NULL
+        ${baseRevision === null ? "" : "AND revision = ?"}
     `)
     .bind(
       now,
       user.userId,
       now,
       id,
+      ...(baseRevision === null ? [] : [baseRevision]),
     );
 
-  const results = await env.DB.batch([
-    mutation,
-    auditStatement(
-      env,
-      id,
-      "delete",
-      {},
-      user,
-      now,
-      `EXISTS (
-        SELECT 1
-        FROM catalog_records
-        WHERE
-          id = ?
-          AND deleted_at = ?
-          AND deleted_by = ?
-      )`,
-      [id, now, user.userId],
-    ),
-  ]);
+  const nextRevision = baseRevision === null ? null : baseRevision + 1;
+  let results;
+  try {
+    results = operation
+      ? await env.DB.batch([
+          mutation,
+          syncSuccessStatement(
+            env, operation, user, "catalog_record", String(id),
+            "catalog_delete", baseRevision, { ok: true, revision: nextRevision },
+          ),
+          deviceSuccessStatement(env, operation, user),
+          auditStatement(
+            env, id, "delete", {}, user, now,
+            "EXISTS (SELECT 1 FROM sync_operations WHERE operation_id = ?)",
+            [operation.operationId],
+          ),
+        ])
+      : await env.DB.batch([
+          mutation,
+          auditStatement(env, id, "delete", {}, user, now, "changes() = 1"),
+        ]);
+  } catch (error) {
+    const duplicate = await replayedOperation(env, user, operation, "catalog_delete");
+    if (duplicate) return duplicate;
+    throw error;
+  }
 
   const result = results[0];
 
   if (!result.meta.changes) {
+    const current = await currentRevision(env, id);
+    if (current && !current.deletedAt && baseRevision !== null) {
+      return revisionConflict(baseRevision, current.revision);
+    }
     return json(
       { error: "Catalog record not found" },
       404,
     );
   }
 
-  return json({ ok: true });
+  const revision = nextRevision ?? (await currentRevision(env, id))?.revision;
+  return json({ ok: true, revision });
 }
 
 async function purgeRecord(
@@ -827,10 +1181,20 @@ async function purgeRecord(
 }
 
 async function restoreRecord(
+  request: Request,
   env: Env,
   user: User,
   id: number,
 ): Promise<Response> {
+  const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const operationValue = operationFrom(body);
+  if (operationValue instanceof Response) return operationValue;
+  const operation = operationValue;
+  const baseValue = baseRevisionFrom(body, Boolean(operation));
+  if (baseValue instanceof Response) return baseValue;
+  const baseRevision = baseValue;
+  const replay = await replayedOperation(env, user, operation, "catalog_restore");
+  if (replay) return replay;
   const now = new Date().toISOString();
 
   const mutation = env.DB
@@ -844,43 +1208,56 @@ async function restoreRecord(
       WHERE
         id = ?
         AND deleted_at IS NOT NULL
+        ${baseRevision === null ? "" : "AND revision = ?"}
     `)
     .bind(
       now,
       id,
+      ...(baseRevision === null ? [] : [baseRevision]),
     );
 
-  const results = await env.DB.batch([
-    mutation,
-    auditStatement(
-      env,
-      id,
-      "restore",
-      {},
-      user,
-      now,
-      `EXISTS (
-        SELECT 1
-        FROM catalog_records
-        WHERE
-          id = ?
-          AND deleted_at IS NULL
-          AND updated_at = ?
-      )`,
-      [id, now],
-    ),
-  ]);
+  const nextRevision = baseRevision === null ? null : baseRevision + 1;
+  let results;
+  try {
+    results = operation
+      ? await env.DB.batch([
+          mutation,
+          syncSuccessStatement(
+            env, operation, user, "catalog_record", String(id),
+            "catalog_restore", baseRevision, { ok: true, revision: nextRevision },
+          ),
+          deviceSuccessStatement(env, operation, user),
+          auditStatement(
+            env, id, "restore", {}, user, now,
+            "EXISTS (SELECT 1 FROM sync_operations WHERE operation_id = ?)",
+            [operation.operationId],
+          ),
+        ])
+      : await env.DB.batch([
+          mutation,
+          auditStatement(env, id, "restore", {}, user, now, "changes() = 1"),
+        ]);
+  } catch (error) {
+    const duplicate = await replayedOperation(env, user, operation, "catalog_restore");
+    if (duplicate) return duplicate;
+    throw error;
+  }
 
   const result = results[0];
 
   if (!result.meta.changes) {
+    const current = await currentRevision(env, id);
+    if (current?.deletedAt && baseRevision !== null) {
+      return revisionConflict(baseRevision, current.revision);
+    }
     return json(
       { error: "Deleted catalog record not found" },
       404,
     );
   }
 
-  return json({ ok: true });
+  const revision = nextRevision ?? (await currentRevision(env, id))?.revision;
+  return json({ ok: true, revision });
 }
 
 async function verifyRecord(
@@ -891,9 +1268,16 @@ async function verifyRecord(
 ): Promise<Response> {
   const body = await request
     .json()
-    .catch(() => ({})) as {
-      verified?: unknown;
-    };
+    .catch(() => ({})) as Record<string, unknown>;
+
+  const operationValue = operationFrom(body);
+  if (operationValue instanceof Response) return operationValue;
+  const operation = operationValue;
+  const baseValue = baseRevisionFrom(body, Boolean(operation));
+  if (baseValue instanceof Response) return baseValue;
+  const baseRevision = baseValue;
+  const replay = await replayedOperation(env, user, operation, "catalog_verify");
+  if (replay) return replay;
 
   const verified =
     body.verified !== false;
@@ -913,6 +1297,7 @@ async function verifyRecord(
       WHERE
         id = ?
         AND deleted_at IS NULL
+        ${baseRevision === null ? "" : "AND revision = ?"}
     `)
     .bind(
       verified ? 1 : 0,
@@ -920,33 +1305,52 @@ async function verifyRecord(
       verified ? now : null,
       now,
       id,
+      ...(baseRevision === null ? [] : [baseRevision]),
     );
 
-  const results = await env.DB.batch([
-    mutation,
-    auditStatement(
-      env,
-      id,
-      verified ? "verify" : "unverify",
-      { verified },
-      user,
-      now,
-      `EXISTS (
-        SELECT 1
-        FROM catalog_records
-        WHERE
-          id = ?
-          AND deleted_at IS NULL
-          AND verified = ?
-          AND updated_at = ?
-      )`,
-      [id, verified ? 1 : 0, now],
-    ),
-  ]);
+  const nextRevision = baseRevision === null ? null : baseRevision + 1;
+  const successPayload = {
+    ok: true,
+    verified,
+    verifiedAt: verified ? now : null,
+    revision: nextRevision,
+  };
+  let results;
+  try {
+    results = operation
+      ? await env.DB.batch([
+          mutation,
+          syncSuccessStatement(
+            env, operation, user, "catalog_record", String(id),
+            "catalog_verify", baseRevision, successPayload,
+          ),
+          deviceSuccessStatement(env, operation, user),
+          auditStatement(
+            env, id, verified ? "verify" : "unverify", { verified }, user, now,
+            "EXISTS (SELECT 1 FROM sync_operations WHERE operation_id = ?)",
+            [operation.operationId],
+          ),
+        ])
+      : await env.DB.batch([
+          mutation,
+          auditStatement(
+            env, id, verified ? "verify" : "unverify", { verified }, user, now,
+            "changes() = 1",
+          ),
+        ]);
+  } catch (error) {
+    const duplicate = await replayedOperation(env, user, operation, "catalog_verify");
+    if (duplicate) return duplicate;
+    throw error;
+  }
 
   const result = results[0];
 
   if (!result.meta.changes) {
+    const current = await currentRevision(env, id);
+    if (current && !current.deletedAt && baseRevision !== null) {
+      return revisionConflict(baseRevision, current.revision);
+    }
     return json(
       { error: "Catalog record not found" },
       404,
@@ -958,6 +1362,7 @@ async function verifyRecord(
     verified,
     verifiedAt:
       verified ? now : null,
+    revision: nextRevision ?? (await currentRevision(env, id))?.revision,
   });
 }
 
@@ -1002,18 +1407,33 @@ async function changeLoan(
 
   const action = clean(body.action).slice(0, 20);
 
+  if (action !== "issue" && action !== "return") {
+    return json({ error: "Неизвестная операция" }, 400);
+  }
+
+  const operationValue = operationFrom(body);
+  if (operationValue instanceof Response) return operationValue;
+  const operation = operationValue;
+  const baseValue = baseRevisionFrom(body, Boolean(operation));
+  if (baseValue instanceof Response) return baseValue;
+  const baseRevision = baseValue;
+  const operationType = action === "issue" ? "loan_issue" : "loan_return";
+  const replay = await replayedOperation(env, user, operation, operationType);
+  if (replay) return replay;
+
   const record = await env.DB
     .prepare(`
       SELECT
         db_number AS dbNumber,
-        record_state AS state
+        record_state AS state,
+        revision
       FROM catalog_records
       WHERE
         id = ?
         AND deleted_at IS NULL
     `)
     .bind(id)
-    .first<{ dbNumber: string; state: string }>();
+    .first<{ dbNumber: string; state: string; revision: number }>();
 
   if (!record) {
     return json(
@@ -1022,16 +1442,15 @@ async function changeLoan(
     );
   }
 
-  if (record.state === "Списан") {
-    return json(
-      { error: "Списанный экземпляр нельзя выдать" },
-      409,
-    );
-  }
-
   const now = new Date().toISOString();
 
   if (action === "issue") {
+    if (record.state === "Списан") {
+      return json(
+        { error: "Списанный экземпляр нельзя выдать" },
+        409,
+      );
+    }
     const readerNote =
       clean(body.readerNote).slice(0, 160);
 
@@ -1067,81 +1486,114 @@ async function changeLoan(
       );
     }
 
-    const results = await env.DB.batch([
-      env.DB
-        .prepare(`
-          INSERT INTO loans (
-            record_id,
-            db_number,
-            reader_id,
-            reader_note,
-            loan_date,
-            return_date,
-            return_note,
-            quantity,
-            issued_by,
-            returned_by,
-            created_at
-          )
-          VALUES (
-            ?, ?, ?, ?, ?, '', '', 1, ?, '', ?
-          )
-        `)
-        .bind(
-          id,
-          record.dbNumber,
-          readerId,
-          readerNote,
-          now,
-          user.displayName,
-          now,
-        ),
+    const revisionClause = baseRevision === null ? "" : "AND revision = ?";
+    const nextRevision = baseRevision === null ? record.revision + 1 : baseRevision + 1;
+    const loanInsert = env.DB
+      .prepare(`
+        INSERT INTO loans (
+          record_id, db_number, reader_id, reader_note, loan_date,
+          return_date, return_note, quantity, issued_by, returned_by, created_at
+        )
+        SELECT id, db_number, ?, ?, ?, '', '', 1, ?, '', ?
+        FROM catalog_records
+        WHERE id = ? AND deleted_at IS NULL AND record_state <> 'Списан'
+          ${revisionClause}
+      `)
+      .bind(
+        readerId,
+        readerNote,
+        now,
+        user.displayName,
+        now,
+        id,
+        ...(baseRevision === null ? [] : [baseRevision]),
+      );
+    const catalogUpdate = env.DB
+      .prepare(`
+        UPDATE catalog_records
+        SET
+          loan_status = 'Выдана', reader_id = ?, last_loan_date = ?,
+          loan_count = loan_count + 1, updated_at = ?, revision = revision + 1
+        WHERE id = ? ${revisionClause} AND changes() = 1
+      `)
+      .bind(
+        readerId || readerNote,
+        now,
+        now,
+        id,
+        ...(baseRevision === null ? [] : [baseRevision]),
+      );
 
-      env.DB
-        .prepare(`
-          UPDATE catalog_records
-          SET
-            loan_status = 'Выдана',
-            reader_id = ?,
-            last_loan_date = ?,
-            loan_count = loan_count + 1,
-            updated_at = ?,
-            revision = revision + 1
-          WHERE id = ?
-        `)
-        .bind(
-          readerId || readerNote,
-          now,
-          now,
-          id,
-        ),
+    let results;
+    try {
+      if (operation) {
+        const sync = env.DB
+          .prepare(`
+            INSERT INTO sync_operations (
+              operation_id, device_id, actor_user_id, entity_type, entity_id,
+              operation_type, base_revision, request_payload, result_payload,
+              result_status, created_at_client, received_at_server, completed_at_server
+            )
+            SELECT ?, ?, ?, 'catalog_record', ?, 'loan_issue', ?, '{}',
+              json_object(
+                'ok', json('true'), 'loanId', CAST(last_insert_rowid() AS TEXT),
+                'revision', ?
+              ),
+              'succeeded', ?, ?, ?
+            WHERE changes() = 1
+          `)
+          .bind(
+            operation.operationId, operation.deviceId, user.userId, String(id),
+            baseRevision, nextRevision, operation.createdAt, now, now,
+          );
+        results = await env.DB.batch([
+          loanInsert,
+          catalogUpdate,
+          sync,
+          deviceSuccessStatement(env, operation, user),
+          auditStatement(
+            env, id, "loan_issue", { readerId, readerNote }, user, now,
+            "EXISTS (SELECT 1 FROM sync_operations WHERE operation_id = ?)",
+            [operation.operationId],
+          ),
+        ]);
+      } else {
+        results = await env.DB.batch([
+          loanInsert,
+          catalogUpdate,
+          auditStatement(
+            env, id, "loan_issue", { readerId, readerNote }, user, now,
+            "changes() = 1",
+          ),
+        ]);
+      }
+    } catch (error) {
+      const duplicate = await replayedOperation(env, user, operation, "loan_issue");
+      if (duplicate) return duplicate;
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("UNIQUE") || message.includes("idx_loans_one_active")) {
+        return json(
+          {
+            error: "active_loan_conflict",
+            message: "Экземпляр уже отмечен как выданный.",
+          },
+          409,
+        );
+      }
+      throw error;
+    }
 
-      env.DB
-        .prepare(`
-          INSERT INTO audit_log (
-            record_id,
-            action,
-            changes_json,
-            actor_id,
-            actor_email,
-            created_at
-          )
-          VALUES (?, 'loan_issue', ?, ?, ?, ?)
-        `)
-        .bind(
-          id,
-          JSON.stringify({
-            readerId,
-            readerNote,
-          }),
-          user.userId,
-          user.email,
-          now,
-        ),
-    ]);
+    if (!results[0].meta.changes) {
+      const current = await currentRevision(env, id);
+      if (current && !current.deletedAt && baseRevision !== null) {
+        return revisionConflict(baseRevision, current.revision);
+      }
+      return json({ error: "Карточка не найдена" }, 404);
+    }
 
     return json({
       ok: true,
+      revision: nextRevision,
       loanStatus: "Выдана",
       loan: {
         id: String(results[0].meta.last_row_id),
@@ -1198,68 +1650,84 @@ async function changeLoan(
       );
     }
 
-    await env.DB.batch([
-      env.DB
-        .prepare(`
-          UPDATE loans
-          SET
-            return_date = ?,
-            return_note = ?,
-            returned_by = ?
-          WHERE
-            id = ?
-            AND return_date = ''
-        `)
-        .bind(
-          now,
-          returnNote,
-          user.displayName,
-          active.id,
-        ),
-
-      env.DB
-        .prepare(`
-          UPDATE catalog_records
-          SET
-            loan_status = 'В наличии',
-            reader_id = '',
-            last_return_date = ?,
-            updated_at = ?,
-            revision = revision + 1
-          WHERE id = ?
-        `)
-        .bind(
-          now,
-          now,
-          id,
-        ),
-
-      env.DB
-        .prepare(`
-          INSERT INTO audit_log (
-            record_id,
-            action,
-            changes_json,
-            actor_id,
-            actor_email,
-            created_at
+    const revisionClause = baseRevision === null ? "" : "AND revision = ?";
+    const nextRevision = baseRevision === null ? record.revision + 1 : baseRevision + 1;
+    const loanUpdate = env.DB
+      .prepare(`
+        UPDATE loans
+        SET return_date = ?, return_note = ?, returned_by = ?
+        WHERE id = ? AND return_date = ''
+          AND EXISTS (
+            SELECT 1 FROM catalog_records
+            WHERE id = ? AND deleted_at IS NULL ${revisionClause}
           )
-          VALUES (?, 'loan_return', ?, ?, ?, ?)
-        `)
-        .bind(
-          id,
-          JSON.stringify({
-            returnNote,
-            loanId: active.id,
-          }),
-          user.userId,
-          user.email,
-          now,
-        ),
-    ]);
+      `)
+      .bind(
+        now,
+        returnNote,
+        user.displayName,
+        active.id,
+        id,
+        ...(baseRevision === null ? [] : [baseRevision]),
+      );
+    const catalogUpdate = env.DB
+      .prepare(`
+        UPDATE catalog_records
+        SET
+          loan_status = 'В наличии', reader_id = '', last_return_date = ?,
+          updated_at = ?, revision = revision + 1
+        WHERE id = ? ${revisionClause} AND changes() = 1
+      `)
+      .bind(
+        now,
+        now,
+        id,
+        ...(baseRevision === null ? [] : [baseRevision]),
+      );
+
+    let results;
+    try {
+      results = operation
+        ? await env.DB.batch([
+            loanUpdate,
+            catalogUpdate,
+            syncSuccessStatement(
+              env, operation, user, "catalog_record", String(id),
+              "loan_return", baseRevision,
+              { ok: true, loanId: String(active.id), revision: nextRevision },
+            ),
+            deviceSuccessStatement(env, operation, user),
+            auditStatement(
+              env, id, "loan_return", { returnNote, loanId: active.id }, user, now,
+              "EXISTS (SELECT 1 FROM sync_operations WHERE operation_id = ?)",
+              [operation.operationId],
+            ),
+          ])
+        : await env.DB.batch([
+            loanUpdate,
+            catalogUpdate,
+            auditStatement(
+              env, id, "loan_return", { returnNote, loanId: active.id }, user, now,
+              "changes() = 1",
+            ),
+          ]);
+    } catch (error) {
+      const duplicate = await replayedOperation(env, user, operation, "loan_return");
+      if (duplicate) return duplicate;
+      throw error;
+    }
+
+    if (!results[0].meta.changes) {
+      const current = await currentRevision(env, id);
+      if (current && !current.deletedAt && baseRevision !== null) {
+        return revisionConflict(baseRevision, current.revision);
+      }
+      return json({ error: "Активная выдача не найдена" }, 409);
+    }
 
     return json({
       ok: true,
+      revision: nextRevision,
       loanStatus: "В наличии",
       loan: {
         id: String(active.id),
@@ -1280,6 +1748,259 @@ async function changeLoan(
   );
 }
 
+
+async function getCurrentInventorySession(env: Env): Promise<Response> {
+  const session = await env.DB
+    .prepare(`
+      SELECT
+        s.id, s.name, s.status, s.created_at AS createdAt,
+        COUNT(e.id) AS seenCount
+      FROM inventory_sessions s
+      LEFT JOIN inventory_events e ON e.session_id = s.id
+      WHERE s.status = 'open'
+      GROUP BY s.id
+      ORDER BY s.created_at DESC
+      LIMIT 1
+    `)
+    .first();
+  return json({ session: session ?? null });
+}
+
+async function createInventorySession(
+  request: Request,
+  env: Env,
+  user: User,
+): Promise<Response> {
+  const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const sessionId = clean(body.sessionId);
+  if (!UUID_PATTERN.test(sessionId)) {
+    return json(
+      { error: "invalid_session_id", message: "Некорректный идентификатор инвентаризации." },
+      400,
+    );
+  }
+  const operationValue = operationFrom(body);
+  if (operationValue instanceof Response) return operationValue;
+  const operation = operationValue;
+  const replay = await replayedOperation(
+    env, user, operation, "inventory_session_create",
+  );
+  if (replay) return replay;
+  const name = clean(body.name).slice(0, 120) || "Текущая инвентаризация";
+  const now = new Date().toISOString();
+  const session = { id: sessionId, name, status: "open", createdAt: now, seenCount: 0 };
+  const insert = env.DB
+    .prepare(`
+      INSERT INTO inventory_sessions (
+        id, name, status, created_by, created_at, completed_at
+      ) VALUES (?, ?, 'open', ?, ?, NULL)
+      ON CONFLICT(id) DO NOTHING
+    `)
+    .bind(sessionId, name, user.userId, now);
+  let results;
+  try {
+    results = operation
+      ? await env.DB.batch([
+          insert,
+          syncSuccessStatement(
+            env, operation, user, "inventory_session", sessionId,
+            "inventory_session_create", null, { ok: true, session },
+          ),
+          deviceSuccessStatement(env, operation, user),
+        ])
+      : await env.DB.batch([insert]);
+  } catch (error) {
+    const duplicate = await replayedOperation(
+      env, user, operation, "inventory_session_create",
+    );
+    if (duplicate) return duplicate;
+    throw error;
+  }
+  if (!results[0].meta.changes) return getCurrentInventorySession(env);
+  return json({ ok: true, session }, 201);
+}
+
+async function markInventorySeen(
+  request: Request,
+  env: Env,
+  user: User,
+): Promise<Response> {
+  const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const recordId = Number(body.recordId);
+  const sessionId = clean(body.sessionId);
+  if (!Number.isSafeInteger(recordId) || recordId < 1 || !UUID_PATTERN.test(sessionId)) {
+    return json(
+      { error: "invalid_inventory_event", message: "Не выбран экземпляр или инвентаризация." },
+      400,
+    );
+  }
+  const operationValue = operationFrom(body);
+  if (operationValue instanceof Response) return operationValue;
+  const operation = operationValue;
+  const replay = await replayedOperation(env, user, operation, "inventory_seen");
+  if (replay) return replay;
+
+  const session = await env.DB
+    .prepare("SELECT id FROM inventory_sessions WHERE id = ? AND status = 'open'")
+    .bind(sessionId)
+    .first();
+  if (!session) {
+    return json(
+      { error: "inventory_session_not_found", message: "Текущая инвентаризация не найдена." },
+      404,
+    );
+  }
+  const record = await env.DB
+    .prepare(`
+      SELECT inventory_number AS inventoryNumber
+      FROM catalog_records
+      WHERE id = ? AND deleted_at IS NULL
+    `)
+    .bind(recordId)
+    .first<{ inventoryNumber: string }>();
+  if (!record) return json({ error: "Catalog record not found" }, 404);
+
+  const now = new Date().toISOString();
+  const eventOperationId = operation?.operationId ?? crypto.randomUUID();
+  const insert = env.DB
+    .prepare(`
+      INSERT INTO inventory_events (
+        session_id, record_id, inventory_number, operation_id, seen_by, seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, record_id) DO NOTHING
+    `)
+    .bind(
+      sessionId, recordId, record.inventoryNumber, eventOperationId,
+      user.userId, now,
+    );
+  const successPayload = {
+    ok: true,
+    duplicate: false,
+    recordId: String(recordId),
+    seenAt: now,
+  };
+  let results;
+  try {
+    results = operation
+      ? await env.DB.batch([
+          insert,
+          syncSuccessStatement(
+            env, operation, user, "inventory_event", String(recordId),
+            "inventory_seen", null, successPayload,
+          ),
+          deviceSuccessStatement(env, operation, user),
+        ])
+      : await env.DB.batch([insert]);
+  } catch (error) {
+    const duplicate = await replayedOperation(env, user, operation, "inventory_seen");
+    if (duplicate) return duplicate;
+    throw error;
+  }
+
+  if (!results[0].meta.changes) {
+    const duplicatePayload = { ...successPayload, duplicate: true };
+    if (operation) {
+      try {
+        await env.DB.batch([
+          env.DB
+            .prepare(`
+              INSERT INTO sync_operations (
+                operation_id, device_id, actor_user_id, entity_type, entity_id,
+                operation_type, base_revision, request_payload, result_payload,
+                result_status, created_at_client, received_at_server, completed_at_server
+              ) VALUES (?, ?, ?, 'inventory_event', ?, 'inventory_seen', NULL,
+                '{}', ?, 'succeeded', ?, ?, ?)
+            `)
+            .bind(
+              operation.operationId, operation.deviceId, user.userId,
+              String(recordId), JSON.stringify(duplicatePayload),
+              operation.createdAt, now, now,
+            ),
+          deviceSuccessStatement(env, operation, user),
+        ]);
+      } catch (error) {
+        const replayed = await replayedOperation(env, user, operation, "inventory_seen");
+        if (replayed) return replayed;
+        throw error;
+      }
+    }
+    return json(duplicatePayload);
+  }
+  return json(successPayload);
+}
+
+function csvCell(value: unknown): string {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function csvResponse(filename: string, rows: unknown[][]): Response {
+  const csv = "\uFEFF" + rows
+    .map((row) => row.map(csvCell).join(";"))
+    .join("\r\n");
+  return new Response(csv, {
+    headers: {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+async function exportCatalogCsv(env: Env): Promise<Response> {
+  const headers = [
+    "id", "inventory_number", "db_number", "bibliographic_id", "author",
+    "title", "title_full", "edition", "publication_place", "publisher",
+    "publication_year", "physical_description", "series", "subjects",
+    "keywords", "classification", "shelfmark", "notes", "location",
+    "accounting_status", "fund_type", "invoice", "record_state",
+    "loan_status", "reader_id", "last_loan_date", "last_return_date",
+    "loan_count", "verified", "verified_by", "verified_at", "revision",
+    "deleted_at", "created_at", "updated_at", "marc_fields_json",
+  ];
+  const rows: unknown[][] = [headers];
+  const pageSize = 500;
+  let offset = 0;
+  while (true) {
+    const page = await env.DB
+      .prepare(`
+        SELECT ${headers.join(", ")}
+        FROM catalog_records
+        ORDER BY id
+        LIMIT ? OFFSET ?
+      `)
+      .bind(pageSize, offset)
+      .all<Record<string, unknown>>();
+    for (const record of page.results) {
+      rows.push(headers.map((header) => record[header]));
+    }
+    if (page.results.length < pageSize) break;
+    offset += pageSize;
+  }
+  return csvResponse("library_catalog_full.csv", rows);
+}
+
+async function exportInventoryCsv(env: Env): Promise<Response> {
+  const result = await env.DB
+    .prepare(`
+      SELECT
+        e.session_id, s.name AS session_name, e.record_id,
+        e.inventory_number, c.db_number, c.author, c.title,
+        e.seen_by, e.seen_at
+      FROM inventory_events e
+      JOIN inventory_sessions s ON s.id = e.session_id
+      JOIN catalog_records c ON c.id = e.record_id
+      ORDER BY e.seen_at, e.id
+    `)
+    .all<Record<string, unknown>>();
+  const headers = [
+    "session_id", "session_name", "record_id", "inventory_number",
+    "db_number", "author", "title", "seen_by", "seen_at",
+  ];
+  return csvResponse(
+    "library_inventory_events.csv",
+    [headers, ...result.results.map((row) => headers.map((header) => row[header]))],
+  );
+}
 
 function randomHex(bytes = 32): string {
   const value = new Uint8Array(bytes);
@@ -2005,6 +2726,41 @@ export default {
     }
 
 if (
+      pathname === "/api/export/catalog.csv" &&
+      method === "GET"
+    ) {
+      return exportCatalogCsv(env);
+    }
+
+    if (
+      pathname === "/api/export/inventory.csv" &&
+      method === "GET"
+    ) {
+      return exportInventoryCsv(env);
+    }
+
+    if (
+      pathname === "/api/inventory/current" &&
+      method === "GET"
+    ) {
+      return getCurrentInventorySession(env);
+    }
+
+    if (
+      pathname === "/api/inventory/sessions" &&
+      method === "POST"
+    ) {
+      return createInventorySession(request, env, user);
+    }
+
+    if (
+      pathname === "/api/inventory/seen" &&
+      method === "POST"
+    ) {
+      return markInventorySeen(request, env, user);
+    }
+
+    if (
       pathname === "/api/catalog" &&
       method === "GET"
     ) {
@@ -2088,6 +2844,7 @@ if (
         method === "DELETE"
       ) {
         return deleteRecord(
+          request,
           env,
           user,
           id,
@@ -2111,6 +2868,7 @@ if (
         method === "POST"
       ) {
         return restoreRecord(
+          request,
           env,
           user,
           id,
