@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "music-school-library-staging",
+  "name": "music-school-library",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-05-22",
 
@@ -16,8 +16,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "music-school-library-staging",
-      "database_id": "a5192040-0557-459e-86b9-9f80f3f23ad2",
+      "database_name": "music-school-library",
+      "database_id": "6f449e4e-73cc-4eed-8370-f0c8339a969e",
       "migrations_dir": "migrations"
     }
   ]

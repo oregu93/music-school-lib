@@ -4,11 +4,16 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "vite --mode mlc-staging",
+    "build": "vite build --mode mlc-staging",
     "preview": "vite preview",
-    "deploy": "vite build && wrangler deploy",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types --config wrangler.staging.jsonc",
+    "build:staging": "vite build --mode mlc-staging",
+    "build:production": "vite build --mode mlc-production",
+    "deploy:staging": "node scripts/deploy-env.mjs staging",
+    "deploy:production": "node scripts/deploy-env.mjs production",
+    "db:migrate:staging": "wrangler d1 migrations apply music-school-library-staging --remote --config wrangler.staging.jsonc",
+    "db:migrate:production": "wrangler d1 migrations apply music-school-library --remote --config wrangler.production.jsonc"
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0",
