@@ -253,16 +253,24 @@ async function getCatalog(
   }
 
   if (query) {
-    const searchPath =
-      SEARCH_FIELDS[field] ?? SEARCH_FIELDS.all;
+    if (field === "inventoryNumber") {
+      clauses.push("inventory_number = ?");
+      bindings.push(query);
+    } else if (field === "dbNumber") {
+      clauses.push("db_number = ?");
+      bindings.push(query);
+    } else {
+      const searchPath =
+        SEARCH_FIELDS[field] ?? SEARCH_FIELDS.all;
 
-    clauses.push(
-      `json_extract(search_text, '${searchPath}') LIKE ?`,
-    );
+      clauses.push(
+        `json_extract(search_text, '${searchPath}') LIKE ?`,
+      );
 
-    bindings.push(
-      `%${normalizeSearch(query)}%`,
-    );
+      bindings.push(
+        `%${normalizeSearch(query)}%`,
+      );
+    }
   }
 
   const where = clauses.join(" AND ");
@@ -282,28 +290,32 @@ async function getCatalog(
     .bind(...bindings, limit, offset)
     .all();
 
-  const stats = await env.DB
-    .prepare(`
-      SELECT
-        COUNT(*) AS total,
-        SUM(
-          CASE
-            WHEN record_state = 'В фонде'
-            THEN 1
-            ELSE 0
-          END
-        ) AS active,
-        SUM(
-          CASE
-            WHEN verified = 1
-            THEN 1
-            ELSE 0
-          END
-        ) AS verified
-      FROM catalog_records
-      WHERE deleted_at IS NULL
-    `)
-    .first();
+  let stats: unknown = null;
+
+  if (!query) {
+    stats = await env.DB
+      .prepare(`
+        SELECT
+          COUNT(*) AS total,
+          SUM(
+            CASE
+              WHEN record_state = 'В фонде'
+              THEN 1
+              ELSE 0
+            END
+          ) AS active,
+          SUM(
+            CASE
+              WHEN verified = 1
+              THEN 1
+              ELSE 0
+            END
+          ) AS verified
+        FROM catalog_records
+        WHERE deleted_at IS NULL
+      `)
+      .first();
+  }
 
   return json({
     items: list.results,

@@ -101,8 +101,29 @@ export function CatalogClient({ userName }: { userName: string }) {
   useEffect(() => {
     if (apiAvailable === false) return;
     const controller = new AbortController();
+    const trimmedQuery = query.trim();
+    const exactIdentifierField =
+      field === 'inventoryNumber' || field === 'dbNumber';
+
+    if (
+      trimmedQuery &&
+      !exactIdentifierField &&
+      trimmedQuery.length < 3
+    ) {
+      setRecords([]);
+      setNotice('Введите не менее 3 символов для общего поиска.');
+      return () => controller.abort();
+    }
+
+    const delay = exactIdentifierField ? 0 : 450;
+
     const timer = window.setTimeout(async () => {
-      const params = new URLSearchParams({ q: query, field, writtenOff: showWrittenOff ? '1' : '0', trash: showDeleted ? '1' : '0' });
+      const params = new URLSearchParams({
+        q: trimmedQuery,
+        field,
+        writtenOff: showWrittenOff ? '1' : '0',
+        trash: showDeleted ? '1' : '0',
+      });
       try {
         const response = await fetch(`/api/catalog?${params}`, { signal: controller.signal });
         if (response.status === 401) {
@@ -111,24 +132,38 @@ export function CatalogClient({ userName }: { userName: string }) {
           return;
         }
         if (!response.ok) throw new Error('catalog request failed');
-        const payload = await response.json() as { items: Array<Record<string, unknown>>; stats: { total?: number; active?: number; verified?: number } };
-        const total = Number(payload.stats?.total ?? 0);
+        const payload = await response.json() as {
+          items: Array<Record<string, unknown>>;
+          stats?: {
+            total?: number;
+            active?: number;
+            verified?: number;
+          } | null;
+        };
+
         setRecords(payload.items.map(normalizeRecord));
-        setServerStats({
-          total,
-          active: Number(payload.stats?.active ?? 0),
-          verified: Number(payload.stats?.verified ?? 0),
-        });
+
+        if (payload.stats) {
+          const total = Number(payload.stats.total ?? 0);
+
+          setServerStats({
+            total,
+            active: Number(payload.stats.active ?? 0),
+            verified: Number(payload.stats.verified ?? 0),
+          });
+
+          setNotice(
+            total > 0
+              ? 'Рабочая база подключена. Изменения сохраняются автоматически.'
+              : 'Рабочая база подключена. Каталог пока пуст.',
+          );
+        }
+
         setApiAvailable(true);
-        setNotice(
-          total > 0
-            ? 'Рабочая база подключена. Изменения сохраняются автоматически.'
-            : 'Рабочая база подключена. Каталог пока пуст.',
-        );
       } catch (error) {
         if ((error as Error).name !== 'AbortError') setNotice('Не удалось связаться с базой. Повторите попытку через несколько секунд.');
       }
-    }, 250);
+    }, delay);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [apiAvailable, field, query, showDeleted, showWrittenOff]);
 
@@ -344,8 +379,8 @@ export function CatalogClient({ userName }: { userName: string }) {
   };
   const exportCsv = () => {
     const active = records.filter((record) => !record.deleted);
-    const headers = ['№ записи в БД', 'Инвентарный номер', 'Автор', 'Заглавие', 'Издательство', 'Год', 'Шифр хранения', 'Местонахождение', 'Статус', 'Проверено'];
-    const rows = active.map((record) => [record.dbNumber, record.inventoryNumber, record.author, record.title, record.publisher, record.year, record.shelfmark, record.location, record.loanStatus, record.verified ? 'Да' : 'Нет']);
+    const headers = ['Инвентарный номер', '№ записи в БД', 'Автор', 'Заглавие', 'Издательство', 'Год', 'Шифр хранения', 'Местонахождение', 'Статус', 'Проверено'];
+    const rows = active.map((record) => [record.inventoryNumber, record.dbNumber, record.author, record.title, record.publisher, record.year, record.shelfmark, record.location, record.loanStatus, record.verified ? 'Да' : 'Нет']);
     const csv = [headers, ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(';')).join('\r\n');
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' })); link.download = 'library_catalog.csv'; link.click(); URL.revokeObjectURL(link.href);
   };
@@ -396,7 +431,7 @@ export function CatalogClient({ userName }: { userName: string }) {
           <Button variant="outline" className="h-11 gap-2" onClick={exportCsv}><Download /> Скачать CSV</Button>
         </div>
         <div className="flex items-center justify-between border-b bg-muted/35 px-4 py-2.5 text-sm text-muted-foreground"><span>Найдено: <strong className="text-foreground">{visible.length}</strong></span><span className="hidden sm:inline">Нажмите на строку, чтобы открыть карточку</span></div>
-        <Table><TableHeader><TableRow className="bg-primary/5 hover:bg-primary/5"><TableHead className="w-28 pl-4">№ записи в БД</TableHead><TableHead className="w-28">Проверено</TableHead><TableHead>Автор</TableHead><TableHead className="min-w-72">Заглавие</TableHead><TableHead>Год</TableHead><TableHead>Инвентарный номер</TableHead><TableHead>Статус</TableHead></TableRow></TableHeader><TableBody>{visible.map((record) => <TableRow key={record.id} tabIndex={0} role="button" onClick={() => setSelectedId(record.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(record.id); }} className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"><TableCell className="pl-4 font-mono text-sm">{record.dbNumber || '—'}</TableCell><TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell><TableCell className="font-medium">{record.author || 'Без автора'}</TableCell><TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell><TableCell>{record.year || '—'}</TableCell><TableCell className="font-mono">{record.inventoryNumber || '—'}</TableCell><TableCell>
+        <Table><TableHeader><TableRow className="bg-primary/5 hover:bg-primary/5"><TableHead className="w-36 pl-4">Инвентарный номер</TableHead><TableHead className="w-28">№ записи в БД</TableHead><TableHead className="w-28">Проверено</TableHead><TableHead>Автор</TableHead><TableHead className="min-w-72">Заглавие</TableHead><TableHead>Год</TableHead><TableHead>Статус</TableHead></TableRow></TableHeader><TableBody>{visible.map((record) => <TableRow key={record.id} tabIndex={0} role="button" onClick={() => setSelectedId(record.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(record.id); }} className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"><TableCell className="pl-4 font-mono text-sm font-semibold">{record.inventoryNumber || '—'}</TableCell><TableCell className="font-mono text-sm text-muted-foreground">{record.dbNumber || '—'}</TableCell><TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell><TableCell className="font-medium">{record.author || 'Без автора'}</TableCell><TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell><TableCell>{record.year || '—'}</TableCell><TableCell>
     <Badge
       variant="outline"
       className={loanStatusClass(record.loanStatus, {
@@ -469,8 +504,8 @@ function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, 
   return <><SheetHeader className="border-b px-6 py-5"><div className="mb-2 flex items-center gap-2"><BookOpen className="size-5 text-primary" />{record.verified && <Badge className="bg-emerald-700">Проверено{record.verifiedAt ? ` ${record.verifiedAt}` : ''}</Badge>}</div><SheetTitle className="pr-10 text-xl">Карточка экземпляра</SheetTitle><SheetDescription>{record.author || 'Без автора'} · {record.title}</SheetDescription></SheetHeader>
     <div className="px-6 pb-8">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <Field label="№ записи в БД" value={draft.dbNumber} onChange={(v) => update('dbNumber', v)} />
         <Field label="Инвентарный номер" value={draft.inventoryNumber} onChange={(v) => update('inventoryNumber', v)} />
+        <Field label="№ записи в БД" value={draft.dbNumber} onChange={(v) => update('dbNumber', v)} />
         <Field label="Автор" value={draft.author} onChange={(v) => update('author', v)} />
         <Field label="Год издания" value={draft.year} onChange={(v) => update('year', v)} />
         <Field label="Заглавие" value={draft.title} onChange={(v) => update('title', v)} wide />
