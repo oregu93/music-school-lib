@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode';
-import { ArrowDownToLine, ArrowUpFromLine, BookOpen, CheckCircle2, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, BookOpen, CheckCircle2, CircleAlert, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -73,19 +73,28 @@ export function CatalogClient({ userName }: { userName: string }) {
   const [addOpen, setAddOpen] = useState(false);
   const [notice, setNotice] = useState('Демонстрационный режим: полный каталог ещё не импортирован.');
   const [actionNotice, setActionNotice] = useState('');
+  const [actionNoticeKind, setActionNoticeKind] =
+    useState<'success' | 'error'>('success');
 
   useEffect(() => {
     if (!actionNotice) return;
 
     const timer = window.setTimeout(() => {
       setActionNotice('');
-    }, 2500);
+    }, 4000);
 
     return () => window.clearTimeout(timer);
   }, [actionNotice]);
 
   const confirmAction = (message: string) => {
     setNotice(message);
+    setActionNoticeKind('success');
+    setActionNotice(message);
+  };
+
+  const reportActionError = (message: string) => {
+    setNotice(message);
+    setActionNoticeKind('error');
     setActionNotice(message);
   };
 
@@ -161,7 +170,7 @@ export function CatalogClient({ userName }: { userName: string }) {
   }, [field, query, records, showDeleted, showWrittenOff]);
 
   const saveRecord = async (next: CatalogRecord) => {
-    if (apiAvailable && !await apiRequest(`/api/catalog/${next.id}`, { method: 'PATCH', body: JSON.stringify(next) }, setNotice)) return;
+    if (apiAvailable && !await apiRequest(`/api/catalog/${next.id}`, { method: 'PATCH', body: JSON.stringify(next) }, reportActionError)) return;
     setRecords((current) => current.map((record) => record.id === next.id ? {
       ...next,
       verified: record.verified,
@@ -173,7 +182,7 @@ export function CatalogClient({ userName }: { userName: string }) {
   };
   const toggleVerifiedRecord = async (record: CatalogRecord) => {
     const verified = !record.verified;
-    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/verify`, { method: 'POST', body: JSON.stringify({ verified }) }, setNotice)) return;
+    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/verify`, { method: 'POST', body: JSON.stringify({ verified }) }, reportActionError)) return;
     const next = { ...record, verified, verifiedAt: verified ? new Date().toLocaleDateString('ru-RU') : undefined };
     setRecords((current) => current.map((item) => item.id === next.id ? next : item));
     setServerStats((current) => current ? { ...current, verified: Math.max(0, current.verified + (verified ? 1 : -1)) } : null);
@@ -184,7 +193,7 @@ export function CatalogClient({ userName }: { userName: string }) {
     );
   };
   const deleteRecord = async (record: CatalogRecord) => {
-    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}`, { method: 'DELETE' }, setNotice)) return;
+    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}`, { method: 'DELETE' }, reportActionError)) return;
     setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: true } : item));
     setSelectedId(null);
     confirmAction('Карточка перемещена в корзину. Её можно восстановить.');
@@ -195,7 +204,7 @@ export function CatalogClient({ userName }: { userName: string }) {
       !await apiRequest(
         `/api/catalog/${record.id}/permanent`,
         { method: 'DELETE' },
-        setNotice,
+        reportActionError,
       )
     ) {
       return;
@@ -206,11 +215,11 @@ export function CatalogClient({ userName }: { userName: string }) {
     );
 
     setSelectedId(null);
-    setNotice('Запись удалена окончательно.');
+    confirmAction('Запись удалена окончательно.');
   };
 
   const restoreRecord = async (record: CatalogRecord) => {
-    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/restore`, { method: 'POST' }, setNotice)) return;
+    if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/restore`, { method: 'POST' }, reportActionError)) return;
     setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: false } : item));
     setSelectedId(null);
     confirmAction('Карточка восстановлена в каталоге.');
@@ -271,20 +280,29 @@ export function CatalogClient({ userName }: { userName: string }) {
         };
 
     if (apiAvailable) {
-      const response = await fetch('/api/catalog', {
+      let response: Response;
+
+      try {
+        response = await fetch('/api/catalog', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(next),
-      });
+          body: JSON.stringify(next),
+        });
+      } catch {
+        reportActionError(
+          'Нет связи с базой. Экземпляр не добавлен.',
+        );
+        return;
+      }
 
       if (!response.ok) {
         const payload = await response
           .json()
           .catch(() => ({})) as { error?: string };
 
-        setNotice(
+        reportActionError(
           payload.error ??
             'Не удалось добавить экземпляр. Изменения не сохранены.',
         );
@@ -396,12 +414,20 @@ export function CatalogClient({ userName }: { userName: string }) {
 
     {actionNotice && (
       <div
-        className="fixed bottom-6 right-6 z-[100] max-w-sm rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-950 shadow-lg"
+        className={
+          actionNoticeKind === 'success'
+            ? 'pointer-events-none fixed left-1/2 top-6 z-[9999] w-[min(92vw,32rem)] -translate-x-1/2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-950 shadow-lg'
+            : 'pointer-events-none fixed left-1/2 top-6 z-[9999] w-[min(92vw,32rem)] -translate-x-1/2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-950 shadow-lg'
+        }
         role="status"
         aria-live="polite"
       >
         <div className="flex items-center gap-2">
-          <CheckCircle2 className="size-4 shrink-0 text-emerald-700" />
+          {actionNoticeKind === 'success' ? (
+            <CheckCircle2 className="size-4 shrink-0 text-emerald-700" />
+          ) : (
+            <CircleAlert className="size-4 shrink-0 text-rose-700" />
+          )}
           <span>{actionNotice}</span>
         </div>
       </div>
@@ -714,14 +740,22 @@ type WebModelContext = {
   registerTool: (tool: Record<string, unknown>, options?: { signal?: AbortSignal }) => void | Promise<void>;
 };
 
-async function apiRequest(url: string, init: RequestInit, setNotice: (message: string) => void) {
+async function apiRequest(
+  url: string,
+  init: RequestInit,
+  reportError: (message: string) => void,
+) {
   try {
     const response = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...init.headers } });
     if (response.ok) return true;
     const payload = await response.json().catch(() => ({})) as { error?: string };
-    setNotice(payload.error || 'Не удалось сохранить изменение.');
+    reportError(
+      payload.error || 'Не удалось сохранить изменение.',
+    );
   } catch {
-    setNotice('Нет связи с базой. Изменение не сохранено.');
+    reportError(
+      'Нет связи с базой. Изменение не сохранено.',
+    );
   }
   return false;
 }
