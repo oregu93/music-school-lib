@@ -41,6 +41,7 @@ export type CatalogRecord = {
   verified: boolean;
   verifiedAt?: string;
   deleted: boolean;
+  revision: number;
 };
 
 type LoanEntry = {
@@ -49,11 +50,11 @@ type LoanEntry = {
 };
 
 const sampleRecords: CatalogRecord[] = [
-  { id: '1', dbNumber: '712', bibliographicId: '2', inventoryNumber: '009985', author: 'Абелев Ю.', title: 'Сборник детских пьес для фортепиано', titleFull: 'Сборник детских пьес для фортепиано', edition: '', publicationPlace: 'Москва', publisher: 'Музгиз', year: '1940', physicalDescription: '28 с.', subjects: 'Фортепианная музыка', keywords: 'Ф.п.пьесы', classification: 'Ф.п.Сб.авт.', shelfmark: 'А 14', notes: 'Фортепианная музыка', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: 'Без накл.73', state: 'В фонде', loanStatus: 'В наличии', verified: true, verifiedAt: '12.09.2026', deleted: false },
-  { id: '2', dbNumber: '713', bibliographicId: '3', inventoryNumber: '004061', author: 'Абелиович', title: 'Три пьесы для скрипки и фортепиано', titleFull: 'Три пьесы для скрипки и фортепиано', edition: '', publicationPlace: '', publisher: '', year: '1962', physicalDescription: '', subjects: 'Камерная музыка. Струнные смычковые с ф.п.', keywords: 'Скрипка.Пьесы', classification: 'Скрипка.Сб.авт.', shelfmark: 'А 14', notes: 'Камерная музыка', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: 'Без накл.', state: 'В фонде', loanStatus: 'В наличии', verified: false, deleted: false },
-  { id: '3', dbNumber: '714', bibliographicId: '4', inventoryNumber: '000438', author: 'Абелян Л.', title: 'Забавное сольфеджио', titleFull: 'Забавное сольфеджио; учебное пособие для детей', edition: 'Учебное пособие', publicationPlace: 'Москва', publisher: 'Сов. композитор', year: '1982', physicalDescription: '60 с.', subjects: 'Сольфеджио', keywords: 'Сольфеджио', classification: 'V.6.', shelfmark: 'А 14', notes: 'Теоретическая литература', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: 'Без накл.', state: 'В фонде', loanStatus: 'Выдана', verified: true, verifiedAt: '12.09.2026', deleted: false },
-  { id: '4', dbNumber: '727', bibliographicId: '17', inventoryNumber: '000443', author: 'Агажанов А.', title: 'Курс сольфеджио', titleFull: 'Курс сольфеджио', edition: '', publicationPlace: 'Москва', publisher: 'Музыка', year: '1974', physicalDescription: '', subjects: 'Сольфеджио', keywords: '', classification: '', shelfmark: 'А 15', notes: '', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: '', state: 'В фонде', loanStatus: 'В наличии', verified: false, deleted: false },
-  { id: '5', dbNumber: '2508', bibliographicId: '1767', inventoryNumber: '005014', author: '', title: 'Золотая лира', titleFull: 'Золотая лира', edition: '', publicationPlace: 'Москва', publisher: 'Музыка', year: '1987', physicalDescription: '', subjects: '', keywords: '', classification: '', shelfmark: '', notes: '', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: '', state: 'Списан', loanStatus: 'Списан', verified: false, deleted: false },
+  { id: '1', dbNumber: '712', bibliographicId: '2', inventoryNumber: '009985', author: 'Абелев Ю.', title: 'Сборник детских пьес для фортепиано', titleFull: 'Сборник детских пьес для фортепиано', edition: '', publicationPlace: 'Москва', publisher: 'Музгиз', year: '1940', physicalDescription: '28 с.', subjects: 'Фортепианная музыка', keywords: 'Ф.п.пьесы', classification: 'Ф.п.Сб.авт.', shelfmark: 'А 14', notes: 'Фортепианная музыка', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: 'Без накл.73', state: 'В фонде', loanStatus: 'В наличии', verified: true, verifiedAt: '12.09.2026', deleted: false, revision: 1 },
+  { id: '2', dbNumber: '713', bibliographicId: '3', inventoryNumber: '004061', author: 'Абелиович', title: 'Три пьесы для скрипки и фортепиано', titleFull: 'Три пьесы для скрипки и фортепиано', edition: '', publicationPlace: '', publisher: '', year: '1962', physicalDescription: '', subjects: 'Камерная музыка. Струнные смычковые с ф.п.', keywords: 'Скрипка.Пьесы', classification: 'Скрипка.Сб.авт.', shelfmark: 'А 14', notes: 'Камерная музыка', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: 'Без накл.', state: 'В фонде', loanStatus: 'В наличии', verified: false, deleted: false, revision: 1 },
+  { id: '3', dbNumber: '714', bibliographicId: '4', inventoryNumber: '000438', author: 'Абелян Л.', title: 'Забавное сольфеджио', titleFull: 'Забавное сольфеджио; учебное пособие для детей', edition: 'Учебное пособие', publicationPlace: 'Москва', publisher: 'Сов. композитор', year: '1982', physicalDescription: '60 с.', subjects: 'Сольфеджио', keywords: 'Сольфеджио', classification: 'V.6.', shelfmark: 'А 14', notes: 'Теоретическая литература', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: 'Без накл.', state: 'В фонде', loanStatus: 'Выдана', verified: true, verifiedAt: '12.09.2026', deleted: false, revision: 1 },
+  { id: '4', dbNumber: '727', bibliographicId: '17', inventoryNumber: '000443', author: 'Агажанов А.', title: 'Курс сольфеджио', titleFull: 'Курс сольфеджио', edition: '', publicationPlace: 'Москва', publisher: 'Музыка', year: '1974', physicalDescription: '', subjects: 'Сольфеджио', keywords: '', classification: '', shelfmark: 'А 15', notes: '', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: '', state: 'В фонде', loanStatus: 'В наличии', verified: false, deleted: false, revision: 1 },
+  { id: '5', dbNumber: '2508', bibliographicId: '1767', inventoryNumber: '005014', author: '', title: 'Золотая лира', titleFull: 'Золотая лира', edition: '', publicationPlace: 'Москва', publisher: 'Музыка', year: '1987', physicalDescription: '', subjects: '', keywords: '', classification: '', shelfmark: '', notes: '', location: 'Абонемент', accountingStatus: 'Баланс', fundType: 'КСУ общ.фонда', invoice: '', state: 'Списан', loanStatus: 'Списан', verified: false, deleted: false, revision: 1 },
 ];
 
 const searchFields = [
@@ -864,6 +865,9 @@ function normalizeRecord(raw: Record<string, unknown>): CatalogRecord {
     state: string('state') === 'Списан' ? 'Списан' : 'В фонде', loanStatus: string('loanStatus') || 'В наличии',
     verified: raw.verified === true || raw.verified === 1, verifiedAt: string('verifiedAt') || undefined,
     deleted: Boolean(raw.deletedAt),
+    revision: typeof raw.revision === 'number'
+      ? raw.revision
+      : Number(raw.revision ?? 1) || 1,
   };
 }
 
