@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { ArrowDownToLine, ArrowUpFromLine, BookOpen, CheckCircle2, CircleAlert, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
@@ -70,6 +70,11 @@ export function CatalogClient({ userName }: { userName: string }) {
   const [showWrittenOff, setShowWrittenOff] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedRecord, setSelectedRecord] =
+    useState<CatalogRecord | null>(null);
+  const [recordCache, setRecordCache] =
+    useState<Record<string, CatalogRecord>>({});
+  const openRecordRequest = useRef(0);
   const [addOpen, setAddOpen] = useState(false);
   const [notice, setNotice] = useState('Демонстрационный режим: полный каталог ещё не импортирован.');
   const [actionNotice, setActionNotice] = useState('');
@@ -192,7 +197,7 @@ export function CatalogClient({ userName }: { userName: string }) {
     return () => lifecycle.abort();
   }, [records]);
 
-  const selected = records.find((record) => record.id === selectedId) ?? null;
+  const selected = selectedRecord;
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase('ru');
     return records.filter((record) => {
@@ -204,22 +209,108 @@ export function CatalogClient({ userName }: { userName: string }) {
     });
   }, [field, query, records, showDeleted, showWrittenOff]);
 
+  const openRecord = async (recordId: string) => {
+    const requestGeneration = ++openRecordRequest.current;
+
+    setSelectedId(recordId);
+    setSelectedRecord(null);
+
+    const cached = recordCache[recordId];
+    if (cached) {
+      if (requestGeneration === openRecordRequest.current) {
+        setSelectedRecord(cached);
+      }
+      return;
+    }
+
+    const listRecord =
+      records.find((record) => record.id === recordId) ?? null;
+
+    if (!apiAvailable) {
+      setSelectedRecord(listRecord);
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/catalog/${recordId}`);
+
+      if (!response.ok) {
+        throw new Error('record request failed');
+      }
+
+      const payload = await response.json() as {
+        record: Record<string, unknown>;
+      };
+
+      const fullRecord = normalizeRecord(payload.record);
+
+      setRecordCache((current) => ({
+        ...current,
+        [recordId]: fullRecord,
+      }));
+
+      if (requestGeneration === openRecordRequest.current) {
+        setSelectedRecord(fullRecord);
+      }
+    } catch {
+      if (requestGeneration === openRecordRequest.current) {
+        setSelectedRecord(listRecord);
+        reportActionError(
+          'Не удалось загрузить полную карточку. Показаны доступные данные.',
+        );
+      }
+    }
+  };
+
+  const closeRecord = () => {
+    ++openRecordRequest.current;
+    setSelectedId(null);
+    setSelectedRecord(null);
+  };
+
   const saveRecord = async (next: CatalogRecord) => {
     if (apiAvailable && !await apiRequest(`/api/catalog/${next.id}`, { method: 'PATCH', body: JSON.stringify(next) }, reportActionError)) return;
-    setRecords((current) => current.map((record) => record.id === next.id ? {
+    const saved = {
       ...next,
-      verified: record.verified,
-      verifiedAt: record.verifiedAt,
-      deleted: record.deleted,
-      loanStatus: record.loanStatus,
-    } : record));
-    confirmAction(`Карточка № ${next.dbNumber || 'без номера'} сохранена.`);
+      verified: next.verified,
+      verifiedAt: next.verifiedAt,
+      deleted: next.deleted,
+      loanStatus: next.loanStatus,
+    };
+
+    setRecords((current) =>
+      current.map((record) =>
+        record.id === next.id
+          ? {
+              ...record,
+              ...saved,
+            }
+          : record,
+      ),
+    );
+
+    setSelectedRecord(saved);
+    setRecordCache((current) => ({
+      ...current,
+      [next.id]: saved,
+    }));
+
+    confirmAction(
+      `Карточка ${next.inventoryNumber || next.dbNumber || 'без номера'} сохранена.`,
+    );
   };
   const toggleVerifiedRecord = async (record: CatalogRecord) => {
     const verified = !record.verified;
     if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/verify`, { method: 'POST', body: JSON.stringify({ verified }) }, reportActionError)) return;
     const next = { ...record, verified, verifiedAt: verified ? new Date().toLocaleDateString('ru-RU') : undefined };
-    setRecords((current) => current.map((item) => item.id === next.id ? next : item));
+    setRecords((current) =>
+      current.map((item) => item.id === next.id ? next : item)
+    );
+    setSelectedRecord(next);
+    setRecordCache((current) => ({
+      ...current,
+      [next.id]: next,
+    }));
     setServerStats((current) => current ? { ...current, verified: Math.max(0, current.verified + (verified ? 1 : -1)) } : null);
     confirmAction(
       verified
@@ -230,7 +321,7 @@ export function CatalogClient({ userName }: { userName: string }) {
   const deleteRecord = async (record: CatalogRecord) => {
     if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}`, { method: 'DELETE' }, reportActionError)) return;
     setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: true } : item));
-    setSelectedId(null);
+    closeRecord();
     confirmAction('Карточка перемещена в корзину. Её можно восстановить.');
   };
   const purgeRecord = async (record: CatalogRecord) => {
@@ -249,14 +340,19 @@ export function CatalogClient({ userName }: { userName: string }) {
       current.filter((item) => item.id !== record.id)
     );
 
-    setSelectedId(null);
+    closeRecord();
+    setRecordCache((current) => {
+      const next = { ...current };
+      delete next[record.id];
+      return next;
+    });
     confirmAction('Запись удалена окончательно.');
   };
 
   const restoreRecord = async (record: CatalogRecord) => {
     if (apiAvailable && !await apiRequest(`/api/catalog/${record.id}/restore`, { method: 'POST' }, reportActionError)) return;
     setRecords((current) => current.map((item) => item.id === record.id ? { ...item, deleted: false } : item));
-    setSelectedId(null);
+    closeRecord();
     confirmAction('Карточка восстановлена в каталоге.');
   };
   const updateLoanStatus = (recordId: string, loanStatus: string) => {
@@ -431,7 +527,7 @@ export function CatalogClient({ userName }: { userName: string }) {
           <Button variant="outline" className="h-11 gap-2" onClick={exportCsv}><Download /> Скачать CSV</Button>
         </div>
         <div className="flex items-center justify-between border-b bg-muted/35 px-4 py-2.5 text-sm text-muted-foreground"><span>Найдено: <strong className="text-foreground">{visible.length}</strong></span><span className="hidden sm:inline">Нажмите на строку, чтобы открыть карточку</span></div>
-        <Table><TableHeader><TableRow className="bg-primary/5 hover:bg-primary/5"><TableHead className="w-36 pl-4">Инвентарный номер</TableHead><TableHead className="w-28">№ записи в БД</TableHead><TableHead className="w-28">Проверено</TableHead><TableHead>Автор</TableHead><TableHead className="min-w-72">Заглавие</TableHead><TableHead>Год</TableHead><TableHead>Статус</TableHead></TableRow></TableHeader><TableBody>{visible.map((record) => <TableRow key={record.id} tabIndex={0} role="button" onClick={() => setSelectedId(record.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(record.id); }} className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"><TableCell className="pl-4 font-mono text-sm font-semibold">{record.inventoryNumber || '—'}</TableCell><TableCell className="font-mono text-sm text-muted-foreground">{record.dbNumber || '—'}</TableCell><TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell><TableCell className="font-medium">{record.author || 'Без автора'}</TableCell><TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell><TableCell>{record.year || '—'}</TableCell><TableCell>
+        <Table><TableHeader><TableRow className="bg-primary/5 hover:bg-primary/5"><TableHead className="w-36 pl-4">Инвентарный номер</TableHead><TableHead className="w-28">№ записи в БД</TableHead><TableHead className="w-28">Проверено</TableHead><TableHead>Автор</TableHead><TableHead className="min-w-72">Заглавие</TableHead><TableHead>Год</TableHead><TableHead>Статус</TableHead></TableRow></TableHeader><TableBody>{visible.map((record) => <TableRow key={record.id} tabIndex={0} role="button" onClick={() => void openRecord(record.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') void openRecord(record.id); }} className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"><TableCell className="pl-4 font-mono text-sm font-semibold">{record.inventoryNumber || '—'}</TableCell><TableCell className="font-mono text-sm text-muted-foreground">{record.dbNumber || '—'}</TableCell><TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell><TableCell className="font-medium">{record.author || 'Без автора'}</TableCell><TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell><TableCell>{record.year || '—'}</TableCell><TableCell>
     <Badge
       variant="outline"
       className={loanStatusClass(record.loanStatus, {
@@ -444,7 +540,7 @@ export function CatalogClient({ userName }: { userName: string }) {
   </TableCell></TableRow>)}</TableBody></Table>
       </div>
     </section>
-    <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelectedId(null); }}><SheetContent className="overflow-y-auto" style={{ width: 'min(96vw, 1480px)', maxWidth: 'none' }}>{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onPurge={purgeRecord} onLoanChange={updateLoanStatus} onLoanNotice={confirmAction} />}</SheetContent></Sheet>
+    <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) closeRecord(); }}><SheetContent className="overflow-y-auto" style={{ width: 'min(96vw, 1480px)', maxWidth: 'none' }}>{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onPurge={purgeRecord} onLoanChange={updateLoanStatus} onLoanNotice={confirmAction} />}</SheetContent></Sheet>
     <AddCopyDialog open={addOpen} records={records.filter((r) => !r.deleted)} onOpenChange={setAddOpen} onAdd={addCopy} />
 
     {actionNotice && (

@@ -56,6 +56,35 @@ const SELECT_FIELDS = `
   updated_at AS updatedAt
 `;
 
+const LIST_FIELDS = `
+  id,
+  db_number AS dbNumber,
+  inventory_number AS inventoryNumber,
+  bibliographic_id AS bibliographicId,
+  author,
+  title,
+  title_full AS titleFull,
+  edition,
+  publication_place AS publicationPlace,
+  publisher,
+  publication_year AS year,
+  physical_description AS physicalDescription,
+  subjects,
+  keywords,
+  classification,
+  shelfmark,
+  notes,
+  location,
+  accounting_status AS accountingStatus,
+  fund_type AS fundType,
+  invoice,
+  record_state AS state,
+  loan_status AS loanStatus,
+  verified,
+  verified_at AS verifiedAt,
+  deleted_at AS deletedAt
+`;
+
 const SEARCH_FIELDS: Record<string, string> = {
   all: "$.all",
   dbNumber: "$.dbNumber",
@@ -277,7 +306,7 @@ async function getCatalog(
 
   const list = await env.DB
     .prepare(`
-      SELECT ${SELECT_FIELDS}
+      SELECT ${LIST_FIELDS}
       FROM catalog_records
       WHERE ${where}
       ORDER BY
@@ -322,6 +351,35 @@ async function getCatalog(
     stats,
     limit,
     offset,
+  });
+}
+
+async function getRecord(
+  env: Env,
+  recordId: number,
+): Promise<Response> {
+  const record = await env.DB
+    .prepare(`
+      SELECT ${SELECT_FIELDS}
+      FROM catalog_records
+      WHERE id = ?
+      LIMIT 1
+    `)
+    .bind(recordId)
+    .first();
+
+  if (!record) {
+    return json(
+      {
+        error: "Record not found",
+        message: "Карточка не найдена.",
+      },
+      404,
+    );
+  }
+
+  return json({
+    record,
   });
 }
 
@@ -1980,6 +2038,16 @@ if (
           request,
           env,
           user,
+          id,
+        );
+      }
+
+      if (
+        pathname === `/api/catalog/${id}` &&
+        method === "GET"
+      ) {
+        return getRecord(
+          env,
           id,
         );
       }
