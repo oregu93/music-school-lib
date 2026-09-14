@@ -53,7 +53,8 @@ const SELECT_FIELDS = `
   verified_at AS verifiedAt,
   deleted_at AS deletedAt,
   created_at AS createdAt,
-  updated_at AS updatedAt
+  updated_at AS updatedAt,
+  revision
 `;
 
 const LIST_FIELDS = `
@@ -82,7 +83,8 @@ const LIST_FIELDS = `
   loan_status AS loanStatus,
   verified,
   verified_at AS verifiedAt,
-  deleted_at AS deletedAt
+  deleted_at AS deletedAt,
+  revision
 `;
 
 const SEARCH_FIELDS: Record<string, string> = {
@@ -574,7 +576,8 @@ async function updateRecord(
       UPDATE catalog_records
       SET
         ${assignments.join(", ")},
-        updated_at = ?
+        updated_at = ?,
+        revision = revision + 1
       WHERE
         id = ?
         AND deleted_at IS NULL
@@ -631,7 +634,8 @@ async function deleteRecord(
       SET
         deleted_at = ?,
         deleted_by = ?,
-        updated_at = ?
+        updated_at = ?,
+        revision = revision + 1
       WHERE
         id = ?
         AND deleted_at IS NULL
@@ -835,7 +839,8 @@ async function restoreRecord(
       SET
         deleted_at = NULL,
         deleted_by = NULL,
-        updated_at = ?
+        updated_at = ?,
+        revision = revision + 1
       WHERE
         id = ?
         AND deleted_at IS NOT NULL
@@ -903,7 +908,8 @@ async function verifyRecord(
         verified = ?,
         verified_by = ?,
         verified_at = ?,
-        updated_at = ?
+        updated_at = ?,
+        revision = revision + 1
       WHERE
         id = ?
         AND deleted_at IS NULL
@@ -1099,7 +1105,8 @@ async function changeLoan(
             reader_id = ?,
             last_loan_date = ?,
             loan_count = loan_count + 1,
-            updated_at = ?
+            updated_at = ?,
+            revision = revision + 1
           WHERE id = ?
         `)
         .bind(
@@ -1217,7 +1224,8 @@ async function changeLoan(
             loan_status = 'В наличии',
             reader_id = '',
             last_return_date = ?,
-            updated_at = ?
+            updated_at = ?,
+            revision = revision + 1
           WHERE id = ?
         `)
         .bind(
