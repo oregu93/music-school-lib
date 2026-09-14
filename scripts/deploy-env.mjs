@@ -31,48 +31,15 @@ if (!(envName in environments)) {
 
 const target = environments[envName];
 
-function run(args) {
-  let result;
-
-  if (process.platform === "win32") {
-    /*
-     * Node 26 on Windows can reject direct spawnSync of .cmd
-     * launchers with EINVAL. Execute pnpm through cmd.exe instead.
-     */
-    const command =
-      "pnpm " +
-      args.map((arg) => {
-        const value = String(arg);
-
-        if (
-          /[\\s"&<>|^()]/.test(value)
-        ) {
-          return '"' +
-            value.replace(/"/g, '\\"') +
-            '"';
-        }
-
-        return value;
-      }).join(" ");
-
-    result = spawnSync(
-      process.env.ComSpec || "cmd.exe",
-      ["/d", "/s", "/c", command],
-      {
-        stdio: "inherit",
-        env: process.env,
-      },
-    );
-  } else {
-    result = spawnSync(
-      "pnpm",
-      args,
-      {
-        stdio: "inherit",
-        env: process.env,
-      },
-    );
-  }
+function runNodeCli(cliFile, args) {
+  const result = spawnSync(
+    process.execPath,
+    [cliFile, ...args],
+    {
+      stdio: "inherit",
+      env: process.env,
+    },
+  );
 
   if (result.error) {
     throw result.error;
@@ -105,15 +72,25 @@ console.log(
 console.log("");
 
 /*
+ * Never allow a generated config from a previous environment
+ * to survive into this deployment.
+ */
+fs.rmSync("dist", {
+  recursive: true,
+  force: true,
+});
+
+/*
  * Build with an environment-specific Vite mode.
  */
-run([
-  "exec",
-  "vite",
-  "build",
-  "--mode",
-  target.mode,
-]);
+runNodeCli(
+  "node_modules/vite/bin/vite.js",
+  [
+    "build",
+    "--mode",
+    target.mode,
+  ],
+);
 
 function walk(dir) {
   if (!fs.existsSync(dir)) {
@@ -224,10 +201,29 @@ console.log(
 );
 console.log("");
 
-run([
-  "exec",
-  "wrangler",
-  "deploy",
-  "--config",
-  deployConfig,
-]);
+const deployConfigArg =
+  process.platform === "win32"
+    ? (
+        deployConfig.startsWith(".\\")
+          ? deployConfig
+          : ".\\" + deployConfig
+      )
+    : (
+        deployConfig.startsWith("./")
+          ? deployConfig
+          : "./" + deployConfig
+      );
+
+console.log(
+  "Deploy config arg:",
+  deployConfigArg,
+);
+
+runNodeCli(
+  "node_modules/wrangler/bin/wrangler.js",
+  [
+    "deploy",
+    "--config",
+    deployConfigArg,
+  ],
+);
