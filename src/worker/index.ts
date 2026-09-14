@@ -167,15 +167,17 @@ function parseRecordId(pathname: string): number | null {
     : null;
 }
 
-async function audit(
+function auditStatement(
   env: Env,
   recordId: number,
   action: string,
   changes: unknown,
   user: User,
   now: string,
-): Promise<void> {
-  await env.DB
+  guardSql = "1",
+  guardBindings: unknown[] = [],
+) {
+  return env.DB
     .prepare(`
       INSERT INTO audit_log (
         record_id,
@@ -185,7 +187,8 @@ async function audit(
         actor_email,
         created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?)
+      SELECT ?, ?, ?, ?, ?, ?
+      WHERE ${guardSql}
     `)
     .bind(
       recordId,
@@ -194,8 +197,8 @@ async function audit(
       user.userId,
       user.email,
       now,
-    )
-    .run();
+      ...guardBindings,
+    );
 }
 
 async function getCatalog(
@@ -320,7 +323,7 @@ async function createRecord(
 
   const now = new Date().toISOString();
 
-  const result = await env.DB
+  const createStatement = env.DB
     .prepare(`
       INSERT INTO catalog_records (
         db_number,
@@ -383,18 +386,39 @@ async function createRecord(
       buildSearchText(body),
       now,
       now,
-    )
-    .run();
+    );
 
-  const id = Number(result.meta.last_row_id);
+  const results = await env.DB.batch([
+    createStatement,
+    env.DB
+      .prepare(`
+        INSERT INTO audit_log (
+          record_id,
+          action,
+          changes_json,
+          actor_id,
+          actor_email,
+          created_at
+        )
+        VALUES (
+          last_insert_rowid(),
+          'create',
+          ?,
+          ?,
+          ?,
+          ?
+        )
+      `)
+      .bind(
+        JSON.stringify(body),
+        user.userId,
+        user.email,
+        now,
+      ),
+  ]);
 
-  await audit(
-    env,
-    id,
-    "create",
-    body,
-    user,
-    now,
+  const id = Number(
+    results[0].meta.last_row_id,
   );
 
   const record = await env.DB
@@ -475,7 +499,7 @@ async function updateRecord(
 
   const now = new Date().toISOString();
 
-  const result = await env.DB
+  const mutation = env.DB
     .prepare(`
       UPDATE catalog_records
       SET
@@ -489,24 +513,37 @@ async function updateRecord(
       ...values,
       now,
       id,
-    )
-    .run();
+    );
+
+  const results = await env.DB.batch([
+    mutation,
+    auditStatement(
+      env,
+      id,
+      "update",
+      body,
+      user,
+      now,
+      `EXISTS (
+        SELECT 1
+        FROM catalog_records
+        WHERE
+          id = ?
+          AND deleted_at IS NULL
+          AND updated_at = ?
+      )`,
+      [id, now],
+    ),
+  ]);
+
+  const result = results[0];
 
   if (!result.meta.changes) {
     return json(
-      { error: "Запись не найдена" },
+      { error: "Catalog record not found" },
       404,
     );
   }
-
-  await audit(
-    env,
-    id,
-    "update",
-    body,
-    user,
-    now,
-  );
 
   return json({ ok: true });
 }
@@ -518,7 +555,7 @@ async function deleteRecord(
 ): Promise<Response> {
   const now = new Date().toISOString();
 
-  const result = await env.DB
+  const mutation = env.DB
     .prepare(`
       UPDATE catalog_records
       SET
@@ -534,24 +571,37 @@ async function deleteRecord(
       user.userId,
       now,
       id,
-    )
-    .run();
+    );
+
+  const results = await env.DB.batch([
+    mutation,
+    auditStatement(
+      env,
+      id,
+      "delete",
+      {},
+      user,
+      now,
+      `EXISTS (
+        SELECT 1
+        FROM catalog_records
+        WHERE
+          id = ?
+          AND deleted_at = ?
+          AND deleted_by = ?
+      )`,
+      [id, now, user.userId],
+    ),
+  ]);
+
+  const result = results[0];
 
   if (!result.meta.changes) {
     return json(
-      { error: "Запись не найдена" },
+      { error: "Catalog record not found" },
       404,
     );
   }
-
-  await audit(
-    env,
-    id,
-    "delete",
-    {},
-    user,
-    now,
-  );
 
   return json({ ok: true });
 }
@@ -709,7 +759,7 @@ async function restoreRecord(
 ): Promise<Response> {
   const now = new Date().toISOString();
 
-  const result = await env.DB
+  const mutation = env.DB
     .prepare(`
       UPDATE catalog_records
       SET
@@ -723,24 +773,37 @@ async function restoreRecord(
     .bind(
       now,
       id,
-    )
-    .run();
+    );
+
+  const results = await env.DB.batch([
+    mutation,
+    auditStatement(
+      env,
+      id,
+      "restore",
+      {},
+      user,
+      now,
+      `EXISTS (
+        SELECT 1
+        FROM catalog_records
+        WHERE
+          id = ?
+          AND deleted_at IS NULL
+          AND updated_at = ?
+      )`,
+      [id, now],
+    ),
+  ]);
+
+  const result = results[0];
 
   if (!result.meta.changes) {
     return json(
-      { error: "Удалённая запись не найдена" },
+      { error: "Deleted catalog record not found" },
       404,
     );
   }
-
-  await audit(
-    env,
-    id,
-    "restore",
-    {},
-    user,
-    now,
-  );
 
   return json({ ok: true });
 }
@@ -763,7 +826,7 @@ async function verifyRecord(
   const now =
     new Date().toISOString();
 
-  const result = await env.DB
+  const mutation = env.DB
     .prepare(`
       UPDATE catalog_records
       SET
@@ -781,24 +844,38 @@ async function verifyRecord(
       verified ? now : null,
       now,
       id,
-    )
-    .run();
+    );
+
+  const results = await env.DB.batch([
+    mutation,
+    auditStatement(
+      env,
+      id,
+      verified ? "verify" : "unverify",
+      { verified },
+      user,
+      now,
+      `EXISTS (
+        SELECT 1
+        FROM catalog_records
+        WHERE
+          id = ?
+          AND deleted_at IS NULL
+          AND verified = ?
+          AND updated_at = ?
+      )`,
+      [id, verified ? 1 : 0, now],
+    ),
+  ]);
+
+  const result = results[0];
 
   if (!result.meta.changes) {
     return json(
-      { error: "Запись не найдена" },
+      { error: "Catalog record not found" },
       404,
     );
   }
-
-  await audit(
-    env,
-    id,
-    verified ? "verify" : "unverify",
-    { verified },
-    user,
-    now,
-  );
 
   return json({
     ok: true,
