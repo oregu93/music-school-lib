@@ -1273,6 +1273,52 @@ async function getCurrentUser(
   };
 }
 
+function isTemporaryD1AuthError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  return (
+    message.includes("D1_ERROR") &&
+    (
+      /row write limit/i.test(message) ||
+      /daily.*write.*limit/i.test(message) ||
+      /exceeded.*limit/i.test(message) ||
+      /temporarily unavailable/i.test(message) ||
+      /service unavailable/i.test(message)
+    )
+  );
+}
+
+function authDatabaseUnavailableResponse(): Response {
+  const html = [
+    "<!doctype html>",
+    '<html lang="ru">',
+    "<head>",
+    '  <meta charset="utf-8">',
+    '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+    "  <title>Вход временно недоступен</title>",
+    "</head>",
+    "<body>",
+    '  <main style="max-width:620px;margin:12vh auto;padding:32px;font-family:system-ui,sans-serif">',
+    "    <h1>Вход временно недоступен</h1>",
+    "    <p>Каталог работает, но база данных временно не может выполнить операцию записи, необходимую для авторизации.</p>",
+    "    <p>Повторите попытку позже.</p>",
+    '    <p><a href="/">Вернуться в каталог</a></p>',
+    "  </main>",
+    "</body>",
+    "</html>",
+  ].join("\n");
+
+  return new Response(html, {
+    status: 503,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
 async function authLogin(
   request: Request,
   env: Env,
@@ -1754,14 +1800,30 @@ export default {
       method === "GET" &&
       pathname === "/api/auth/login"
     ) {
-      return authLogin(request, env);
+      try {
+        return await authLogin(request, env);
+      } catch (error) {
+        if (isTemporaryD1AuthError(error)) {
+          console.error("Temporary D1 auth login error:", error);
+          return authDatabaseUnavailableResponse();
+        }
+        throw error;
+      }
     }
 
     if (
       method === "GET" &&
       pathname === "/api/auth/callback"
     ) {
-      return authCallback(request, env);
+      try {
+        return await authCallback(request, env);
+      } catch (error) {
+        if (isTemporaryD1AuthError(error)) {
+          console.error("Temporary D1 auth callback error:", error);
+          return authDatabaseUnavailableResponse();
+        }
+        throw error;
+      }
     }
 
     if (
