@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Library, LogIn } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { CatalogClient } from "../../app/catalog-client";
+import { HelpPage } from "./HelpPage";
 
 type SessionUser = {
   id: string;
@@ -18,6 +19,10 @@ type SessionResponse = {
 };
 
 export default function App() {
+  if (window.location.pathname === "/help") {
+    return <HelpPage />;
+  }
+
   const [loading, setLoading] = useState(true);
 
   const [session, setSession] =
@@ -109,6 +114,13 @@ export default function App() {
             <LogIn className="size-4" />
             Войти через Яндекс ID
           </Button>
+
+          <a
+            href="/help"
+            className="mt-4 inline-block text-sm font-medium text-primary underline-offset-4 hover:underline"
+          >
+            Инструкция библиотекарю
+          </a>
         </section>
       </main>
     );
