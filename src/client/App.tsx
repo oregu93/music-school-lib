@@ -23,6 +23,10 @@ export default function App() {
     return <HelpPage />;
   }
 
+  const loggedOut =
+    new URLSearchParams(window.location.search)
+      .get("logout") === "1";
+
   const [loading, setLoading] = useState(true);
 
   const [session, setSession] =
@@ -103,6 +107,20 @@ export default function App() {
             Доступ разрешён только сотрудникам,
             добавленным в список пользователей каталога.
           </p>
+
+          {loggedOut && (
+            <div
+              className="mt-5 rounded-xl border bg-muted/50 px-4 py-3 text-left text-sm leading-relaxed"
+              role="status"
+            >
+              <strong>Сеанс каталога завершён.</strong>
+              <p className="mt-1 text-muted-foreground">
+                Если работа на этом компьютере закончена,
+                выйдите также из Яндекс ID и закройте
+                все окна Firefox.
+              </p>
+            </div>
+          )}
 
           <Button
             className="mt-6 w-full gap-2"
