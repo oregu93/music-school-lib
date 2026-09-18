@@ -2272,6 +2272,11 @@ async function authLogin(
   );
 
   authorize.searchParams.set(
+    "force_confirm",
+    "yes",
+  );
+
+  authorize.searchParams.set(
     "state",
     state,
   );
@@ -2617,7 +2622,10 @@ async function authLogout(
   return new Response(null, {
     status: 302,
     headers: {
-      Location: new URL("/", url.origin).toString(),
+      Location: new URL(
+        "/?logout=1",
+        url.origin,
+      ).toString(),
       "Set-Cookie": clearCookie(
         "mlc_session",
         url.protocol === "https:",
