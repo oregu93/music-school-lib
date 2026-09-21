@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, BookOpen, CheckCircle2, CircleAlert, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, BookOpen, CheckCircle2, CircleAlert, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -108,6 +108,24 @@ function formatUpdatedAt(value?: string) {
   return Number.isNaN(date.getTime()) ? value : updatedAtFormatter.format(date);
 }
 
+type MobileVisualViewport = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+};
+
+function shouldUseFocusedMobileSearch() {
+  if (typeof window === 'undefined') return false;
+
+  const coarsePointer =
+    window.matchMedia?.('(hover: none) and (pointer: coarse)').matches ?? false;
+  const touchViewport =
+    navigator.maxTouchPoints > 0 && window.innerWidth <= 1366;
+
+  return coarsePointer || touchViewport;
+}
+
 export function CatalogClient({ userName }: { userName: string }) {
   const [records, setRecords] = useState(sampleRecords);
   const [apiAvailable, setApiAvailable] = useState<boolean | null>(null);
@@ -137,6 +155,10 @@ export function CatalogClient({ userName }: { userName: string }) {
     useState<'success' | 'error'>('success');
   const [syncCounts, setSyncCounts] = useState({ pending: 0, conflict: 0, failed: 0 });
   const [syncEpoch, setSyncEpoch] = useState(0);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [mobileVisualViewport, setMobileVisualViewport] =
+    useState<MobileVisualViewport | null>(null);
+  const mobileSearchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!actionNotice) return;
@@ -147,6 +169,51 @@ export function CatalogClient({ userName }: { userName: string }) {
 
     return () => window.clearTimeout(timer);
   }, [actionNotice]);
+
+  useEffect(() => {
+    if (!mobileSearchOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const viewport = window.visualViewport;
+    const updateViewport = () => {
+      if (!viewport) {
+        setMobileVisualViewport(null);
+        return;
+      }
+
+      setMobileVisualViewport({
+        top: viewport.offsetTop,
+        left: viewport.offsetLeft,
+        width: viewport.width,
+        height: viewport.height,
+      });
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileSearchOpen(false);
+    };
+
+    updateViewport();
+    viewport?.addEventListener('resize', updateViewport);
+    viewport?.addEventListener('scroll', updateViewport);
+    window.addEventListener('resize', updateViewport);
+    window.addEventListener('keydown', closeOnEscape);
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      mobileSearchInputRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.cancelAnimationFrame(focusFrame);
+      viewport?.removeEventListener('resize', updateViewport);
+      viewport?.removeEventListener('scroll', updateViewport);
+      window.removeEventListener('resize', updateViewport);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [mobileSearchOpen]);
 
   const confirmAction = (message: string) => {
     setNotice(message);
@@ -806,7 +873,7 @@ export function CatalogClient({ userName }: { userName: string }) {
       />
       <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
         <div className="flex flex-col gap-3 border-b p-4 xl:flex-row xl:items-center">
-          <div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Автор, заглавие, номер…" className="h-11 pl-10 text-base" aria-label="Поиск по каталогу" /></div>
+          <div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => { if (shouldUseFocusedMobileSearch()) setMobileSearchOpen(true); }} placeholder="Автор, заглавие, номер…" className="h-11 pl-10 text-base" aria-label="Поиск по каталогу" /></div>
           <Select value={field} onValueChange={(value) => value && setField(value)}>
             <SelectTrigger className="h-11 w-full xl:w-56" aria-label="Поле поиска">
               <span className="flex-1 text-left">{searchFieldLabel(field)}</span>
@@ -929,6 +996,195 @@ export function CatalogClient({ userName }: { userName: string }) {
     </section>
     <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) closeRecord(); }}><SheetContent className="overflow-y-auto" style={{ width: 'min(96vw, 1480px)', maxWidth: 'none' }}>{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onPurge={purgeRecord} onLoanChange={updateLoanStatus} onLoanNotice={confirmAction} />}</SheetContent></Sheet>
     <AddCopyDialog open={addOpen} onOpenChange={setAddOpen} onAdd={addRecord} />
+
+    {mobileSearchOpen && (
+      <div
+        className="fixed left-0 top-0 z-[9000] flex h-[100dvh] w-full flex-col bg-background shadow-2xl"
+        style={mobileVisualViewport
+          ? {
+              top: `${mobileVisualViewport.top}px`,
+              left: `${mobileVisualViewport.left}px`,
+              width: `${mobileVisualViewport.width}px`,
+              height: `${mobileVisualViewport.height}px`,
+            }
+          : undefined}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Мобильный поиск по каталогу"
+      >
+        <div
+          className="flex shrink-0 items-center justify-between gap-3 border-b bg-background/95 px-3 py-2 backdrop-blur"
+          style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top))' }}
+        >
+          <div className="min-w-0">
+            <strong className="block truncate text-sm">Поиск по каталогу</strong>
+            <span className="text-xs text-muted-foreground">
+              {query.trim()
+                ? `Показано: ${visible.length}${hasMore ? ' · есть ещё' : ''}`
+                : 'Введите запрос'}
+            </span>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Закрыть мобильный поиск"
+            title="Закрыть"
+            onClick={() => setMobileSearchOpen(false)}
+          >
+            <X />
+          </Button>
+        </div>
+
+        <div
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-muted/15"
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            if (
+              element.scrollHeight - element.scrollTop - element.clientHeight < 240
+            ) {
+              void loadMoreCatalog();
+            }
+          }}
+        >
+          {!query.trim() ? (
+            <div className="grid min-h-full place-items-center p-6 text-center">
+              <div>
+                <Search className="mx-auto mb-3 size-8 text-muted-foreground" />
+                <p className="font-medium">Начните вводить запрос</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Результаты появятся здесь, над строкой поиска.
+                </p>
+              </div>
+            </div>
+          ) : (
+            field !== 'inventoryNumber' &&
+            field !== 'dbNumber' &&
+            query.trim().length < 3
+          ) ? (
+            <div className="grid min-h-full place-items-center p-6 text-center text-sm text-muted-foreground">
+              Введите не менее 3 символов.
+            </div>
+          ) : visible.length === 0 ? (
+            <div className="grid min-h-full place-items-center p-6 text-center text-sm text-muted-foreground">
+              Ничего не найдено.
+            </div>
+          ) : (
+            <div className="divide-y">
+              {visible.map((record) => (
+                <button
+                  key={record.id}
+                  type="button"
+                  className="grid w-full grid-cols-[6.5rem_minmax(0,1fr)] gap-3 bg-background px-3 py-3 text-left active:bg-accent sm:grid-cols-[7rem_minmax(0,1fr)_auto] sm:items-center"
+                  onClick={() => {
+                    setMobileSearchOpen(false);
+                    void openRecord(record.id);
+                  }}
+                >
+                  <div className="font-mono text-sm font-semibold">
+                    {record.inventoryNumber || '—'}
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">
+                      {record.author || 'Без автора'}
+                    </div>
+                    <div className="line-clamp-2 text-sm text-muted-foreground">
+                      {record.title || 'Без заглавия'}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground sm:hidden">
+                      {record.deleted
+                        ? 'В корзине'
+                        : record.state === 'Списан'
+                          ? 'Списан'
+                          : record.loanStatus}
+                    </div>
+                  </div>
+
+                  <Badge
+                    variant="outline"
+                    className={`hidden sm:inline-flex ${loanStatusClass(record.loanStatus, {
+                      deleted: record.deleted,
+                      writtenOff: record.state === 'Списан',
+                    })}`}
+                  >
+                    {record.deleted ? 'В корзине' : record.loanStatus}
+                  </Badge>
+                </button>
+              ))}
+
+              {loadingMore && (
+                <div className="px-4 py-3 text-center text-sm text-muted-foreground">
+                  Загружается следующая часть…
+                </div>
+              )}
+
+              {!hasMore && visible.length > 0 && (
+                <div className="px-4 py-3 text-center text-xs text-muted-foreground">
+                  Все найденные записи загружены.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div
+          className="shrink-0 border-t bg-background px-3 pt-2 shadow-[0_-8px_30px_rgba(0,0,0,0.08)]"
+          style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+        >
+          <div className="mb-2 flex items-center gap-2">
+            <Select
+              value={field}
+              onValueChange={(value) => value && setField(value)}
+            >
+              <SelectTrigger
+                className="h-9 min-w-0 flex-1"
+                aria-label="Поле мобильного поиска"
+              >
+                <span className="truncate text-left">
+                  {searchFieldLabel(field)}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                {searchFields.map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {query && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setQuery('');
+                  window.requestAnimationFrame(() =>
+                    mobileSearchInputRef.current?.focus({ preventScroll: true })
+                  );
+                }}
+              >
+                Очистить
+              </Button>
+            )}
+          </div>
+
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref={mobileSearchInputRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Автор, заглавие, номер…"
+              className="h-12 pl-10 pr-3 text-base"
+              aria-label="Поиск по каталогу на мобильном устройстве"
+              autoComplete="off"
+              enterKeyHint="search"
+            />
+          </div>
+        </div>
+      </div>
+    )}
 
     {actionNotice && (
       <div
