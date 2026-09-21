@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import QRCode from 'qrcode';
 import { ArrowDownToLine, ArrowUpFromLine, BookOpen, CheckCircle2, CircleAlert, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -584,81 +583,72 @@ export function CatalogClient({ userName }: { userName: string }) {
   const updateLoanStatus = (recordId: string, loanStatus: string, revision: number) => {
     applyRecordPatch(recordId, { loanStatus, revision });
   };
-  const addCopy = async (
-    sourceId: string,
-    dbNumber: string,
-    inventoryNumber: string,
-  ) => {
-    if (!dbNumber.trim()) return;
+  const addRecord = async (next: CatalogRecord) => {
+    const prepared: CatalogRecord = {
+      ...next,
+      id: crypto.randomUUID(),
+      dbNumber: '',
+      inventoryNumber: next.inventoryNumber.trim(),
+      state: 'В фонде',
+      loanStatus: 'В наличии',
+      verified: false,
+      verifiedAt: undefined,
+      updatedAt: new Date().toISOString(),
+      deleted: false,
+      revision: 1,
+    };
 
-    const source = records.find(
-      (record) => record.id === sourceId,
-    );
-
-    const next: CatalogRecord = source
-      ? {
-          ...source,
-          id: crypto.randomUUID(),
-          dbNumber: dbNumber.trim(),
-          inventoryNumber: inventoryNumber.trim(),
-          verified: false,
-          verifiedAt: undefined,
-          deleted: false,
-          state: 'В фонде',
-          loanStatus: 'В наличии',
-          revision: 1,
-        }
-      : {
-          id: crypto.randomUUID(),
-          dbNumber: dbNumber.trim(),
-          inventoryNumber: inventoryNumber.trim(),
-          bibliographicId: '',
-          author: '',
-          title: '',
-          titleFull: '',
-          edition: '',
-          publicationPlace: '',
-          publisher: '',
-          year: '',
-          physicalDescription: '',
-          subjects: '',
-          keywords: '',
-          classification: '',
-          shelfmark: '',
-          notes: '',
-          location: '',
-          accountingStatus: '',
-          fundType: '',
-          invoice: '',
-          state: 'В фонде',
-          loanStatus: 'В наличии',
-          verified: false,
-          verifiedAt: undefined,
-          deleted: false,
-          revision: 1,
-        };
+    if (!prepared.inventoryNumber) {
+      reportActionError('Укажите инвентарный номер нового экземпляра.');
+      return false;
+    }
 
     const result = await submitMutation({
       entityType: 'catalog_record',
       operationType: 'catalog_create',
       method: 'POST',
       url: '/api/catalog',
-      payload: next,
+      payload: prepared,
     });
-    if (!await mutationAccepted(result)) return;
+
+    if (!await mutationAccepted(result)) return false;
+
     const saved = result.kind === 'synced' && result.payload?.record
       ? normalizeRecord(result.payload.record as Record<string, unknown>)
-      : next;
-    setRecords((current) => [...current, saved]);
+      : prepared;
+
+    setRecords((current) =>
+      sortMode === 'updated'
+        ? [saved, ...current]
+        : [...current, saved],
+    );
+
     setServerStats((current) => current
-      ? { ...current, total: current.total + 1, active: current.active + 1 }
+      ? {
+          ...current,
+          total: current.total + 1,
+          active: current.active + 1,
+        }
       : current,
     );
+
+    setRecordCache((current) => ({
+      ...current,
+      [saved.id]: saved,
+    }));
+
     setAddOpen(false);
-    setSelectedId(saved.id);
+
+    if (result.kind === 'synced') {
+      setSelectedId(saved.id);
+      setSelectedRecord(saved);
+    }
+
     confirmAction(result.kind === 'queued'
-      ? 'Новый экземпляр сохранён на этом устройстве и ожидает синхронизации.'
-      : `Экземпляр № ${saved.dbNumber || 'без номера'} добавлен.`);
+      ? `Новый экземпляр ${saved.inventoryNumber} сохранён на этом устройстве и ожидает синхронизации.`
+      : `Экземпляр ${saved.inventoryNumber} добавлен. Карточка открыта для проверки.`);
+
+    return true;
   };
   const exportCsv = async () => {
     try {
@@ -806,7 +796,7 @@ export function CatalogClient({ userName }: { userName: string }) {
       </div>
     </section>
     <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) closeRecord(); }}><SheetContent className="overflow-y-auto" style={{ width: 'min(96vw, 1480px)', maxWidth: 'none' }}>{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onPurge={purgeRecord} onLoanChange={updateLoanStatus} onLoanNotice={confirmAction} />}</SheetContent></Sheet>
-    <AddCopyDialog open={addOpen} records={records.filter((r) => !r.deleted)} onOpenChange={setAddOpen} onAdd={addCopy} />
+    <AddCopyDialog open={addOpen} onOpenChange={setAddOpen} onAdd={addRecord} />
 
     {actionNotice && (
       <div
@@ -873,6 +863,7 @@ function InventoryPanel({
   onNotice: (message: string) => void;
   onError: (message: string) => void;
 }) {
+  const [enabled, setEnabled] = useState(false);
   const [session, setSession] = useState<InventorySession | null>(null);
   const [inventoryNumber, setInventoryNumber] = useState('');
   const [candidates, setCandidates] = useState<CatalogRecord[]>([]);
@@ -913,6 +904,11 @@ function InventoryPanel({
   };
 
   const markSeen = async (record: CatalogRecord) => {
+    if (!enabled) {
+      onError('Сначала включите режим инвентаризации.');
+      return;
+    }
+
     if (!session || seenIds.has(record.id)) {
       onNotice('Этот экземпляр уже отмечен в текущей инвентаризации.');
       return;
@@ -943,7 +939,7 @@ function InventoryPanel({
 
   const lookup = async () => {
     const value = inventoryNumber.trim();
-    if (!value || !session) return;
+    if (!enabled || !value || !session) return;
     setBusy(true);
     try {
       const params = new URLSearchParams({
@@ -977,51 +973,111 @@ function InventoryPanel({
     window.location.href = '/api/export/inventory.csv';
   };
 
-  return <section className="mb-5 rounded-2xl border bg-card p-4 shadow-sm">
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h2 className="font-semibold">Инвентаризация</h2>
-        <p className="text-sm text-muted-foreground">
-          {session ? `${session.name} · отмечено: ${session.seenCount}` : 'Активная инвентаризация не начата'}
-        </p>
+  if (!enabled) {
+    return (
+      <section className="mb-5 rounded-2xl border bg-card px-4 py-3 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">Инвентаризация</h2>
+            <p className="text-sm text-muted-foreground">
+              {session
+                ? `Режим выключен · ${session.name} · отмечено: ${session.seenCount}`
+                : 'Режим выключен'}
+            </p>
+          </div>
+          <Button variant="outline" onClick={() => setEnabled(true)}>
+            Включить режим
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="mb-5 rounded-2xl border border-amber-300 bg-amber-50/40 p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="font-semibold">Инвентаризация</h2>
+            <Badge variant="outline" className="border-amber-400 bg-amber-100 text-amber-900">
+              Режим включён
+            </Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {session
+              ? `${session.name} · отмечено: ${session.seenCount}`
+              : 'Активная инвентаризация не начата'}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {!session && <Button onClick={() => void startSession()}>Начать</Button>}
+          <Button variant="outline" onClick={exportEvents}>
+            <Download /> События CSV
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setEnabled(false);
+              setInventoryNumber('');
+              setCandidates([]);
+            }}
+          >
+            Выключить режим
+          </Button>
+        </div>
       </div>
-      <div className="flex gap-2">
-        {!session && <Button onClick={() => void startSession()}>Начать</Button>}
-        <Button variant="outline" onClick={exportEvents}><Download /> События CSV</Button>
-      </div>
-    </div>
-    {session && <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-      <Input
-        value={inventoryNumber}
-        autoComplete="off"
-        autoFocus
-        placeholder="Сканируйте или введите инвентарный номер"
-        aria-label="Инвентарный номер для инвентаризации"
-        onChange={(event) => setInventoryNumber(event.target.value)}
-        onKeyDown={(event) => { if (event.key === 'Enter') void lookup(); }}
-      />
-      <Button disabled={busy || !inventoryNumber.trim()} onClick={() => void lookup()}>
-        Найти и отметить
-      </Button>
-    </div>}
-    {candidates.length > 1 && <div className="mt-3 grid gap-2">
-      {candidates.map((record) => <button
-        key={record.id}
-        type="button"
-        className="rounded-lg border px-3 py-2 text-left hover:bg-muted"
-        onClick={() => { onOpenRecord(record.id); void markSeen(record); }}
-      >
-        <strong>{record.inventoryNumber}</strong> · № БД {record.dbNumber || '—'} · {record.author || 'Без автора'} · {record.title}
-      </button>)}
-    </div>}
-  </section>;
+
+      {session && (
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <Input
+            value={inventoryNumber}
+            autoComplete="off"
+            autoFocus
+            placeholder="Сканируйте или введите инвентарный номер"
+            aria-label="Инвентарный номер для инвентаризации"
+            onChange={(event) => setInventoryNumber(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void lookup();
+            }}
+          />
+          <Button
+            disabled={busy || !inventoryNumber.trim()}
+            onClick={() => void lookup()}
+          >
+            Найти и отметить
+          </Button>
+        </div>
+      )}
+
+      {candidates.length > 1 && (
+        <div className="mt-3 grid gap-2">
+          {candidates.map((record) => (
+            <button
+              key={record.id}
+              type="button"
+              className="rounded-lg border bg-background px-3 py-2 text-left hover:bg-muted"
+              onClick={() => {
+                onOpenRecord(record.id);
+                void markSeen(record);
+              }}
+            >
+              <strong>{record.inventoryNumber}</strong>
+              {' · '}
+              {record.author || 'Без автора'}
+              {' · '}
+              {record.title}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, onRestore, onPurge, onLoanChange, onLoanNotice }: { record: CatalogRecord; apiAvailable: boolean; onSave: (record: CatalogRecord) => void; onToggleVerified: (record: CatalogRecord) => void; onDelete: (record: CatalogRecord) => void; onRestore: (record: CatalogRecord) => void; onPurge: (record: CatalogRecord) => void; onLoanChange: (recordId: string, status: string, revision: number) => void; onLoanNotice: (message: string) => void }) {
-  const [draft, setDraft] = useState(record); const [qr, setQr] = useState('');
+  const [draft, setDraft] = useState(record);
   const update = (key: keyof CatalogRecord, value: string) => setDraft((current) => ({ ...current, [key]: value }));
   useEffect(() => { setDraft((current) => ({ ...current, loanStatus: record.loanStatus })); }, [record.loanStatus]);
-  useEffect(() => { const payload = qrPayload(draft); QRCode.toDataURL(payload, { errorCorrectionLevel: 'L', width: 280, margin: 2, color: { dark: '#17324d', light: '#ffffff' } }).then(setQr).catch(() => setQr('')); }, [draft]);
   return <><SheetHeader className="border-b px-6 py-5"><div className="mb-2 flex items-center gap-2"><BookOpen className="size-5 text-primary" />{record.verified && <Badge className="bg-emerald-700">Проверено{record.verifiedAt ? ` ${record.verifiedAt}` : ''}</Badge>}</div><SheetTitle className="pr-10 text-xl">Карточка экземпляра</SheetTitle><SheetDescription>{record.author || 'Без автора'} · {record.title}</SheetDescription></SheetHeader>
     <div className="px-6 pb-8">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -1029,7 +1085,7 @@ function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, 
         <Field label="№ записи в БД" value={draft.dbNumber} onChange={(v) => update('dbNumber', v)} />
         <Field label="Автор" value={draft.author} onChange={(v) => update('author', v)} />
         <Field label="Год издания" value={draft.year} onChange={(v) => update('year', v)} />
-        <Field label="Заглавие" value={draft.title} onChange={(v) => update('title', v)} wide />
+        <Field label="Заглавие" value={draft.title} onChange={(v) => update('title', v)} wide multiline />
         <Field label="Полные сведения" value={draft.titleFull} onChange={(v) => update('titleFull', v)} wide multiline />
         <Field label="Сведения об издании" value={draft.edition} onChange={(v) => update('edition', v)} wide />
         <Field label="Издательство" value={draft.publisher} onChange={(v) => update('publisher', v)} />
@@ -1045,7 +1101,6 @@ function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, 
         onStatusChange={(status, revision) => onLoanChange(record.id, status, revision)}
         onNotice={onLoanNotice}
       />
-      <aside className="mt-6 flex flex-col items-center gap-4 rounded-xl border bg-muted/35 p-4 text-center sm:flex-row sm:text-left">{qr ? <img src={qr} alt="QR-код с информацией из карточки" className="aspect-square w-36 shrink-0 rounded-md bg-white" /> : <div className="aspect-square w-36 shrink-0 animate-pulse rounded-md bg-muted" />}<div><p className="font-medium">QR-код экземпляра</p><p className="mt-1 max-w-lg text-sm leading-relaxed text-muted-foreground">Содержит библиографические сведения и данные для поиска книги на полке. Личная информация читателей в QR-код не включается.</p></div></aside>
     </div>
     <div className="sticky bottom-0 flex flex-wrap justify-between gap-2 border-t bg-background/95 px-6 py-4 backdrop-blur"><div>{record.deleted ? <div className="flex flex-wrap gap-2"><Button variant="outline" className="gap-2" onClick={() => onRestore(record)}><RotateCcw /> Восстановить</Button><AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить окончательно</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Удалить запись окончательно?</AlertDialogTitle><AlertDialogDescription>Запись, история её выдач и обычный журнал изменений будут удалены без возможности восстановления. В системном журнале останется только факт окончательного удаления.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onPurge(record)}>Удалить безвозвратно</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></div> : <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" className="gap-2" />}><Trash2 /> Удалить</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Переместить карточку в корзину?</AlertDialogTitle><AlertDialogDescription>Карточка исчезнет из каталога, но её можно будет восстановить.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => onDelete(record)}>Переместить в корзину</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</div><div className="flex flex-wrap gap-2">{!record.deleted && <Button variant="outline" onClick={() => onToggleVerified(record)}>{record.verified ? 'Снять отметку «Проверено»' : 'Отметить проверенной'}</Button>}<Button disabled={record.deleted} onClick={() => onSave(draft)}>Сохранить изменения</Button></div></div></>;
 }
@@ -1159,134 +1214,446 @@ function formatLoanDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
 }
 
-function Field({ label, value, onChange, wide = false, multiline = false, readOnly = false }: { label: string; value: string; onChange: (value: string) => void; wide?: boolean; multiline?: boolean; readOnly?: boolean }) { return <label className={wide ? 'sm:col-span-2' : ''}><span className="mb-1.5 block text-sm font-medium">{label}</span>{multiline ? <Textarea value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} className="min-h-20 text-base md:text-sm" /> : <Input value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} className={readOnly ? 'h-10 bg-muted/50' : 'h-10'} />}</label>; }
+function AutoGrowTextarea({
+  value,
+  onChange,
+  readOnly = false,
+  minHeight = 44,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  readOnly?: boolean;
+  minHeight?: number;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${Math.max(minHeight, element.scrollHeight)}px`;
+  }, [minHeight, value]);
+
+  return (
+    <Textarea
+      ref={ref}
+      rows={1}
+      value={value}
+      readOnly={readOnly}
+      onChange={(event) => onChange(event.target.value)}
+      className={
+        readOnly
+          ? 'min-h-11 resize-none overflow-hidden bg-muted/50 text-base md:text-sm'
+          : 'min-h-11 resize-none overflow-hidden text-base md:text-sm'
+      }
+    />
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  wide = false,
+  multiline = false,
+  readOnly = false,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  wide?: boolean;
+  multiline?: boolean;
+  readOnly?: boolean;
+}) {
+  return (
+    <label className={wide ? 'sm:col-span-2' : ''}>
+      <span className="mb-1.5 block text-sm font-medium">{label}</span>
+      {multiline
+        ? (
+          <AutoGrowTextarea
+            value={value}
+            readOnly={readOnly}
+            onChange={onChange}
+            minHeight={44}
+          />
+        )
+        : (
+          <Input
+            value={value}
+            readOnly={readOnly}
+            onChange={(event) => onChange(event.target.value)}
+            className={readOnly ? 'h-10 bg-muted/50' : 'h-10'}
+          />
+        )}
+    </label>
+  );
+}
+
+function emptyCatalogRecord(): CatalogRecord {
+  return {
+    id: crypto.randomUUID(),
+    dbNumber: '',
+    inventoryNumber: '',
+    bibliographicId: '',
+    author: '',
+    title: '',
+    titleFull: '',
+    edition: '',
+    publicationPlace: '',
+    publisher: '',
+    year: '',
+    physicalDescription: '',
+    subjects: '',
+    keywords: '',
+    classification: '',
+    shelfmark: '',
+    notes: '',
+    location: '',
+    accountingStatus: '',
+    fundType: '',
+    invoice: '',
+    state: 'В фонде',
+    loanStatus: 'В наличии',
+    verified: false,
+    verifiedAt: undefined,
+    updatedAt: undefined,
+    deleted: false,
+    revision: 1,
+  };
+}
+
+type SourceSearchField = 'author' | 'inventoryNumber';
 
 function AddCopyDialog({
   open,
-  records,
   onOpenChange,
   onAdd,
 }: {
   open: boolean;
-  records: CatalogRecord[];
   onOpenChange: (open: boolean) => void;
-  onAdd: (
-    sourceId: string,
-    dbNumber: string,
-    inventoryNumber: string,
-  ) => void;
+  onAdd: (draft: CatalogRecord) => Promise<boolean>;
 }) {
-  const [sourceId, setSourceId] =
-    useState('__new__');
+  const [draft, setDraft] = useState<CatalogRecord>(() => emptyCatalogRecord());
+  const [sourceField, setSourceField] = useState<SourceSearchField>('author');
+  const [sourceQuery, setSourceQuery] = useState('');
+  const [sourceResults, setSourceResults] = useState<CatalogRecord[]>([]);
+  const [sourceLabel, setSourceLabel] = useState('');
+  const [sourceError, setSourceError] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const [dbNumber, setDbNumber] =
-    useState('');
+  useEffect(() => {
+    if (!open) return;
+    setDraft(emptyCatalogRecord());
+    setSourceField('author');
+    setSourceQuery('');
+    setSourceResults([]);
+    setSourceLabel('');
+    setSourceError('');
+    setSearching(false);
+    setSaving(false);
+  }, [open]);
 
-  const [inventoryNumber, setInventoryNumber] =
-    useState('');
+  const update = (key: keyof CatalogRecord, value: string) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
 
-  const submit = () => {
-    onAdd(
-      sourceId === '__new__' ? '' : sourceId,
-      dbNumber,
+  const searchSource = async () => {
+    const value = sourceQuery.trim();
+
+    if (!value) {
+      setSourceResults([]);
+      setSourceError('Введите автора или инвентарный номер.');
+      return;
+    }
+
+    if (sourceField === 'author' && value.length < 3) {
+      setSourceResults([]);
+      setSourceError('Для поиска по автору введите не менее 3 символов.');
+      return;
+    }
+
+    setSearching(true);
+    setSourceError('');
+
+    try {
+      const params = new URLSearchParams({
+        q: value,
+        field: sourceField,
+        writtenOff: '1',
+        limit: '20',
+        offset: '0',
+      });
+
+      const response = await fetch(`/api/catalog?${params}`);
+
+      if (!response.ok) throw new Error('source_search_failed');
+
+      const payload = await response.json() as {
+        items: Array<Record<string, unknown>>;
+      };
+
+      const matches = payload.items.map(normalizeRecord);
+      setSourceResults(matches);
+
+      if (matches.length === 0) {
+        setSourceError('Подходящие карточки не найдены.');
+      }
+    } catch {
+      setSourceResults([]);
+      setSourceError('Не удалось выполнить поиск основы карточки.');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const chooseSource = (source: CatalogRecord) => {
+    const inventoryNumber = draft.inventoryNumber;
+
+    setDraft({
+      ...source,
+      id: crypto.randomUUID(),
+      dbNumber: '',
       inventoryNumber,
+      state: 'В фонде',
+      loanStatus: 'В наличии',
+      verified: false,
+      verifiedAt: undefined,
+      updatedAt: undefined,
+      deleted: false,
+      revision: 1,
+    });
+
+    setSourceLabel(
+      [
+        source.inventoryNumber,
+        source.author || 'Без автора',
+        source.title || 'Без заглавия',
+      ].filter(Boolean).join(' · '),
     );
 
-    setDbNumber('');
-    setInventoryNumber('');
+    setSourceResults([]);
+    setSourceError('');
+  };
+
+  const clearSource = () => {
+    const inventoryNumber = draft.inventoryNumber;
+    setDraft({
+      ...emptyCatalogRecord(),
+      inventoryNumber,
+    });
+    setSourceLabel('');
+    setSourceResults([]);
+    setSourceError('');
+  };
+
+  const submit = async () => {
+    if (!draft.inventoryNumber.trim() || saving) return;
+
+    setSaving(true);
+
+    try {
+      await onAdd({
+        ...draft,
+        id: crypto.randomUUID(),
+        dbNumber: '',
+        inventoryNumber: draft.inventoryNumber.trim(),
+        state: 'В фонде',
+        loanStatus: 'В наличии',
+        verified: false,
+        verifiedAt: undefined,
+        updatedAt: undefined,
+        deleted: false,
+        revision: 1,
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={onOpenChange}
-    >
-      <DialogContent>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="max-h-[92vh] overflow-y-auto"
+        style={{ width: 'min(96vw, 1100px)', maxWidth: 'none' }}
+      >
         <DialogHeader>
-          <DialogTitle>
-            Добавить экземпляр
-          </DialogTitle>
-
+          <DialogTitle>Новый экземпляр</DialogTitle>
           <DialogDescription>
-            Можно создать новую карточку с нуля
-            или использовать существующую книгу
-            как образец.
+            Заполните карточку сразу. Инвентарный номер — основной номер экземпляра.
+            Поле «№ записи в БД» при добавлении не требуется.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4 py-2">
-          <label>
-            <span className="mb-1.5 block text-sm font-medium">
-              Основа новой карточки
-            </span>
+        <section className="rounded-xl border bg-muted/25 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="font-medium">Основа новой карточки</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Необязательно. Найдите похожий экземпляр по автору или инвентарному номеру,
+                чтобы перенести его библиографические сведения.
+              </p>
+              {sourceLabel && (
+                <p className="mt-2 text-sm">
+                  Выбрано: <strong>{sourceLabel}</strong>
+                </p>
+              )}
+            </div>
+            {sourceLabel && (
+              <Button variant="outline" size="sm" onClick={clearSource}>
+                Очистить основу
+              </Button>
+            )}
+          </div>
 
+          <div className="mt-4 grid gap-2 sm:grid-cols-[12rem_1fr_auto]">
             <Select
-              value={sourceId}
-              onValueChange={(value) =>
-                value && setSourceId(value)
-              }
+              value={sourceField}
+              onValueChange={(value) => {
+                if (value) {
+                  setSourceField(value as SourceSearchField);
+                  setSourceResults([]);
+                  setSourceError('');
+                }
+              }}
             >
-              <SelectTrigger className="h-10 w-full">
+              <SelectTrigger aria-label="Поле поиска основы карточки">
                 <SelectValue />
               </SelectTrigger>
-
               <SelectContent>
-                <SelectItem value="__new__">
-                  Новая карточка с нуля
-                </SelectItem>
-
-                {records.map((record) => (
-                  <SelectItem
-                    key={record.id}
-                    value={record.id}
-                  >
-                    {record.dbNumber || 'Без номера'}
-                    {' — '}
-                    {record.author || 'Без автора'}
-                    {' — '}
-                    {record.title || 'Без заглавия'}
-                  </SelectItem>
-                ))}
+                <SelectItem value="author">Автор</SelectItem>
+                <SelectItem value="inventoryNumber">Инвентарный номер</SelectItem>
               </SelectContent>
             </Select>
-          </label>
 
-          <Field
-            label="№ записи в БД"
-            value={dbNumber}
-            onChange={setDbNumber}
-          />
+            <Input
+              value={sourceQuery}
+              placeholder={
+                sourceField === 'author'
+                  ? 'Введите автора'
+                  : 'Введите инвентарный номер'
+              }
+              onChange={(event) => setSourceQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void searchSource();
+              }}
+            />
 
+            <Button
+              variant="outline"
+              disabled={searching || !sourceQuery.trim()}
+              onClick={() => void searchSource()}
+            >
+              {searching ? 'Поиск…' : 'Найти'}
+            </Button>
+          </div>
+
+          {sourceError && (
+            <p className="mt-2 text-sm text-destructive" role="alert">
+              {sourceError}
+            </p>
+          )}
+
+          {sourceResults.length > 0 && (
+            <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto">
+              {sourceResults.map((record) => (
+                <button
+                  key={record.id}
+                  type="button"
+                  className="rounded-lg border bg-background px-3 py-2 text-left hover:bg-muted"
+                  onClick={() => chooseSource(record)}
+                >
+                  <strong>{record.inventoryNumber || 'Без инв. номера'}</strong>
+                  {' · '}
+                  {record.author || 'Без автора'}
+                  {' · '}
+                  {record.title || 'Без заглавия'}
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <Field
             label="Инвентарный номер"
-            value={inventoryNumber}
-            onChange={setInventoryNumber}
+            value={draft.inventoryNumber}
+            onChange={(value) => update('inventoryNumber', value)}
+          />
+          <Field
+            label="Автор"
+            value={draft.author}
+            onChange={(value) => update('author', value)}
+          />
+          <Field
+            label="Год издания"
+            value={draft.year}
+            onChange={(value) => update('year', value)}
+          />
+          <Field
+            label="Заглавие"
+            value={draft.title}
+            onChange={(value) => update('title', value)}
+            wide
+            multiline
+          />
+          <Field
+            label="Полные сведения"
+            value={draft.titleFull}
+            onChange={(value) => update('titleFull', value)}
+            wide
+            multiline
+          />
+          <Field
+            label="Сведения об издании"
+            value={draft.edition}
+            onChange={(value) => update('edition', value)}
+            wide
+          />
+          <Field
+            label="Издательство"
+            value={draft.publisher}
+            onChange={(value) => update('publisher', value)}
+          />
+          <Field
+            label="Шифр хранения"
+            value={draft.shelfmark}
+            onChange={(value) => update('shelfmark', value)}
+          />
+          <Field
+            label="Местонахождение"
+            value={draft.location}
+            onChange={(value) => update('location', value)}
+          />
+          <Field
+            label="Темы"
+            value={draft.subjects}
+            onChange={(value) => update('subjects', value)}
+            wide
+          />
+          <Field
+            label="Примечания"
+            value={draft.notes}
+            onChange={(value) => update('notes', value)}
+            wide
+            multiline
           />
         </div>
 
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
             Отмена
           </Button>
-
           <Button
-            disabled={!dbNumber.trim()}
-            onClick={submit}
+            disabled={saving || !draft.inventoryNumber.trim()}
+            onClick={() => void submit()}
           >
-            Добавить экземпляр
+            {saving ? 'Сохранение…' : 'Добавить экземпляр'}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
-}
-
-function qrPayload(record: CatalogRecord) {
-  const rows = [['№ записи в БД', record.dbNumber], ['Инвентарный номер', record.inventoryNumber], ['Автор', record.author], ['Заглавие', record.titleFull || record.title], ['Издание', record.edition], ['Место издания', record.publicationPlace], ['Издательство', record.publisher], ['Год', record.year], ['Физическое описание', record.physicalDescription], ['Темы', record.subjects], ['Ключевые слова', record.keywords], ['Классификация', record.classification], ['Шифр хранения', record.shelfmark], ['Местонахождение', record.location], ['Статус выдачи', record.loanStatus], ['Примечания', record.notes]];
-  return ['КАРТОЧКА ЭКЗЕМПЛЯРА', ...rows.filter(([, value]) => value.trim()).map(([label, value]) => `${label}: ${value}`)].join('\n');
 }
 
 function normalizeRecord(raw: Record<string, unknown>): CatalogRecord {
