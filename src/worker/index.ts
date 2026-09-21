@@ -505,6 +505,14 @@ async function getCatalog(
     if (field === "inventoryNumber") {
       clauses.push("inventory_number = ?");
       bindings.push(query);
+    } else if (field === "source") {
+      clauses.push(
+        "(inventory_number LIKE ? OR json_extract(search_text, '$.author') LIKE ?)",
+      );
+      bindings.push(
+        `%${query}%`,
+        `%${normalizeSearch(query)}%`,
+      );
     } else if (field === "dbNumber") {
       clauses.push("db_number = ?");
       bindings.push(query);
@@ -2255,7 +2263,7 @@ async function authLogin(
     .run();
 
   const authorize = new URL(
-    "https://oauth.yandex.com/authorize",
+    "https://oauth.yandex.ru/authorize",
   );
 
   authorize.searchParams.set(
@@ -2397,7 +2405,7 @@ async function authCallback(
   });
 
   const tokenResponse = await fetch(
-    "https://oauth.yandex.com/token",
+    "https://oauth.yandex.ru/token",
     {
       method: "POST",
       headers: {
