@@ -461,6 +461,10 @@ async function getCatalog(
     params.get("writtenOff") === "1";
   const trash =
     params.get("trash") === "1";
+  const sort =
+    params.get("sort") === "updated"
+      ? "updated"
+      : "author";
 
   const requestedLimit =
     Number(params.get("limit") ?? 200);
@@ -520,15 +524,17 @@ async function getCatalog(
 
   const where = clauses.join(" AND ");
 
+  const orderBy =
+    sort === "updated"
+      ? "updated_at DESC, id DESC"
+      : "author COLLATE NOCASE, title COLLATE NOCASE, id";
+
   const list = await env.DB
     .prepare(`
       SELECT ${LIST_FIELDS}
       FROM catalog_records
       WHERE ${where}
-      ORDER BY
-        author COLLATE NOCASE,
-        title COLLATE NOCASE,
-        id
+      ORDER BY ${orderBy}
       LIMIT ?
       OFFSET ?
     `)
@@ -567,6 +573,7 @@ async function getCatalog(
     stats,
     limit,
     offset,
+    sort,
   });
 }
 
