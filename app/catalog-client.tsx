@@ -68,8 +68,18 @@ const searchFields = [
   ['inventoryNumber', 'Инвентарный номер'], ['dbNumber', '№ записи в БД'],
 ] as const;
 
+function searchFieldLabel(value: string) {
+  return searchFields.find(([key]) => key === value)?.[1] ?? 'Все поля';
+}
+
 const CATALOG_PAGE_SIZE = 200;
 type CatalogSort = 'author' | 'updated';
+
+function catalogSortLabel(value: CatalogSort) {
+  return value === 'updated'
+    ? 'Последние изменения'
+    : 'По автору и заглавию';
+}
 
 const updatedAtFormatter = new Intl.DateTimeFormat('ru-RU', {
   dateStyle: 'short',
@@ -726,18 +736,45 @@ export function CatalogClient({ userName }: { userName: string }) {
       <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
         <div className="flex flex-col gap-3 border-b p-4 xl:flex-row xl:items-center">
           <div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Автор, заглавие, номер…" className="h-11 pl-10 text-base" aria-label="Поиск по каталогу" /></div>
-          <Select value={field} onValueChange={(value) => value && setField(value)}><SelectTrigger className="h-11 w-full xl:w-56" aria-label="Поле поиска"><SelectValue /></SelectTrigger><SelectContent>{searchFields.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select>
+          <Select value={field} onValueChange={(value) => value && setField(value)}>
+            <SelectTrigger className="h-11 w-full xl:w-56" aria-label="Поле поиска">
+              <span className="flex-1 text-left">{searchFieldLabel(field)}</span>
+            </SelectTrigger>
+            <SelectContent>
+              {searchFields.map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <label className="flex min-h-11 items-center gap-3 rounded-lg border px-3 text-sm"><Checkbox checked={showWrittenOff} onCheckedChange={setShowWrittenOff} />Списанные</label>
           <label className="flex min-h-11 items-center gap-3 rounded-lg border px-3 text-sm"><Checkbox checked={showDeleted} onCheckedChange={setShowDeleted} />Корзина</label>
           <Select value={sortMode} onValueChange={(value) => value && setSortMode(value as CatalogSort)}>
-            <SelectTrigger className="h-11 w-full xl:w-56" aria-label="Сортировка каталога"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="h-11 w-full xl:w-56" aria-label="Сортировка каталога">
+              <span className="flex-1 text-left">{catalogSortLabel(sortMode)}</span>
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="author">По автору и заглавию</SelectItem>
               <SelectItem value="updated">Последние изменения</SelectItem>
             </SelectContent>
           </Select>
           <Button className="h-11 gap-2" onClick={() => setAddOpen(true)}><CirclePlus /> Добавить</Button>
-          <Button variant="outline" className="h-11 gap-2" onClick={exportCsv}><Download /> Скачать CSV</Button>
+          <details className="relative">
+            <summary className="flex h-11 cursor-pointer list-none items-center gap-2 rounded-lg border px-3 text-sm font-medium text-muted-foreground hover:bg-muted [&::-webkit-details-marker]:hidden">
+              Экспорт
+            </summary>
+            <div className="absolute right-0 z-30 mt-1 w-64 rounded-lg border bg-popover p-3 shadow-lg">
+              <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+                Выгрузка полного каталога в CSV.
+              </p>
+              <Button
+                variant="outline"
+                className="w-full gap-2"
+                onClick={exportCsv}
+              >
+                <Download /> Скачать каталог CSV
+              </Button>
+            </div>
+          </details>
         </div>
         <div className="flex items-center justify-between border-b bg-muted/35 px-4 py-2.5 text-sm text-muted-foreground">
           <span>Загружено: <strong className="text-foreground">{visible.length}</strong>{hasMore ? ' · прокрутите вниз для продолжения' : ''}</span>
@@ -1322,8 +1359,6 @@ function emptyCatalogRecord(): CatalogRecord {
   };
 }
 
-type SourceSearchField = 'author' | 'inventoryNumber';
-
 function AddCopyDialog({
   open,
   onOpenChange,
@@ -1334,77 +1369,107 @@ function AddCopyDialog({
   onAdd: (draft: CatalogRecord) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<CatalogRecord>(() => emptyCatalogRecord());
-  const [sourceField, setSourceField] = useState<SourceSearchField>('author');
   const [sourceQuery, setSourceQuery] = useState('');
   const [sourceResults, setSourceResults] = useState<CatalogRecord[]>([]);
   const [sourceLabel, setSourceLabel] = useState('');
   const [sourceError, setSourceError] = useState('');
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
+  const sourceSearchGeneration = useRef(0);
 
   useEffect(() => {
     if (!open) return;
     setDraft(emptyCatalogRecord());
-    setSourceField('author');
     setSourceQuery('');
     setSourceResults([]);
     setSourceLabel('');
     setSourceError('');
     setSearching(false);
     setSaving(false);
+    ++sourceSearchGeneration.current;
   }, [open]);
 
-  const update = (key: keyof CatalogRecord, value: string) => {
-    setDraft((current) => ({ ...current, [key]: value }));
-  };
+  useEffect(() => {
+    if (!open || sourceLabel) return;
 
-  const searchSource = async () => {
     const value = sourceQuery.trim();
+    const generation = ++sourceSearchGeneration.current;
 
     if (!value) {
       setSourceResults([]);
-      setSourceError('Введите автора или инвентарный номер.');
-      return;
-    }
-
-    if (sourceField === 'author' && value.length < 3) {
-      setSourceResults([]);
-      setSourceError('Для поиска по автору введите не менее 3 символов.');
-      return;
-    }
-
-    setSearching(true);
-    setSourceError('');
-
-    try {
-      const params = new URLSearchParams({
-        q: value,
-        field: sourceField,
-        writtenOff: '1',
-        limit: '20',
-        offset: '0',
-      });
-
-      const response = await fetch(`/api/catalog?${params}`);
-
-      if (!response.ok) throw new Error('source_search_failed');
-
-      const payload = await response.json() as {
-        items: Array<Record<string, unknown>>;
-      };
-
-      const matches = payload.items.map(normalizeRecord);
-      setSourceResults(matches);
-
-      if (matches.length === 0) {
-        setSourceError('Подходящие карточки не найдены.');
-      }
-    } catch {
-      setSourceResults([]);
-      setSourceError('Не удалось выполнить поиск основы карточки.');
-    } finally {
+      setSourceError('');
       setSearching(false);
+      return;
     }
+
+    if (value.length < 2) {
+      setSourceResults([]);
+      setSourceError('');
+      setSearching(false);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const timer = window.setTimeout(async () => {
+      setSearching(true);
+      setSourceError('');
+
+      try {
+        const params = new URLSearchParams({
+          q: value,
+          field: 'source',
+          writtenOff: '1',
+          limit: '20',
+          offset: '0',
+        });
+
+        const response = await fetch(
+          `/api/catalog?${params}`,
+          { signal: controller.signal },
+        );
+
+        if (!response.ok) throw new Error('source_search_failed');
+
+        const payload = await response.json() as {
+          items: Array<Record<string, unknown>>;
+        };
+
+        if (generation !== sourceSearchGeneration.current) return;
+
+        const matches = payload.items
+          .map(normalizeRecord)
+          .slice(0, 12);
+
+        setSourceResults(matches);
+        setSourceError(
+          matches.length === 0
+            ? 'Подходящие карточки не найдены.'
+            : '',
+        );
+      } catch (error) {
+        if (
+          (error as Error).name !== 'AbortError' &&
+          generation === sourceSearchGeneration.current
+        ) {
+          setSourceResults([]);
+          setSourceError('Не удалось выполнить поиск основы карточки.');
+        }
+      } finally {
+        if (generation === sourceSearchGeneration.current) {
+          setSearching(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [open, sourceLabel, sourceQuery]);
+
+  const update = (key: keyof CatalogRecord, value: string) => {
+    setDraft((current) => ({ ...current, [key]: value }));
   };
 
   const chooseSource = (source: CatalogRecord) => {
@@ -1426,25 +1491,31 @@ function AddCopyDialog({
 
     setSourceLabel(
       [
-        source.inventoryNumber,
+        source.inventoryNumber || 'Без инв. номера',
         source.author || 'Без автора',
         source.title || 'Без заглавия',
-      ].filter(Boolean).join(' · '),
+      ].join(' · '),
     );
 
+    setSourceQuery('');
     setSourceResults([]);
     setSourceError('');
+    ++sourceSearchGeneration.current;
   };
 
   const clearSource = () => {
     const inventoryNumber = draft.inventoryNumber;
+
     setDraft({
       ...emptyCatalogRecord(),
       inventoryNumber,
     });
+
     setSourceLabel('');
+    setSourceQuery('');
     setSourceResults([]);
     setSourceError('');
+    ++sourceSearchGeneration.current;
   };
 
   const submit = async () => {
@@ -1487,18 +1558,20 @@ function AddCopyDialog({
 
         <section className="rounded-xl border bg-muted/25 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
+            <div className="min-w-0 flex-1">
               <h3 className="font-medium">Основа новой карточки</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                Необязательно. Найдите похожий экземпляр по автору или инвентарному номеру,
-                чтобы перенести его библиографические сведения.
+                Оставьте поле пустым для чистой карточки. Если нужна копия похожей записи,
+                начните вводить автора или инвентарный номер.
               </p>
+
               {sourceLabel && (
                 <p className="mt-2 text-sm">
                   Выбрано: <strong>{sourceLabel}</strong>
                 </p>
               )}
             </div>
+
             {sourceLabel && (
               <Button variant="outline" size="sm" onClick={clearSource}>
                 Очистить основу
@@ -1506,71 +1579,46 @@ function AddCopyDialog({
             )}
           </div>
 
-          <div className="mt-4 grid gap-2 sm:grid-cols-[12rem_1fr_auto]">
-            <Select
-              value={sourceField}
-              onValueChange={(value) => {
-                if (value) {
-                  setSourceField(value as SourceSearchField);
-                  setSourceResults([]);
-                  setSourceError('');
-                }
-              }}
-            >
-              <SelectTrigger aria-label="Поле поиска основы карточки">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="author">Автор</SelectItem>
-                <SelectItem value="inventoryNumber">Инвентарный номер</SelectItem>
-              </SelectContent>
-            </Select>
-
+          <div className="relative mt-4">
             <Input
               value={sourceQuery}
-              placeholder={
-                sourceField === 'author'
-                  ? 'Введите автора'
-                  : 'Введите инвентарный номер'
-              }
+              disabled={Boolean(sourceLabel)}
+              placeholder="Автор или инвентарный номер (необязательно)"
+              aria-label="Основа новой карточки"
+              autoComplete="off"
               onChange={(event) => setSourceQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void searchSource();
-              }}
             />
 
-            <Button
-              variant="outline"
-              disabled={searching || !sourceQuery.trim()}
-              onClick={() => void searchSource()}
-            >
-              {searching ? 'Поиск…' : 'Найти'}
-            </Button>
+            {!sourceLabel && sourceResults.length > 0 && (
+              <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg">
+                {sourceResults.map((record) => (
+                  <button
+                    key={record.id}
+                    type="button"
+                    className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-accent"
+                    onClick={() => chooseSource(record)}
+                  >
+                    <strong>{record.inventoryNumber || 'Без инв. номера'}</strong>
+                    {' · '}
+                    {record.author || 'Без автора'}
+                    {' · '}
+                    {record.title || 'Без заглавия'}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          {sourceError && (
-            <p className="mt-2 text-sm text-destructive" role="alert">
-              {sourceError}
+          {searching && (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Поиск подходящих карточек…
             </p>
           )}
 
-          {sourceResults.length > 0 && (
-            <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto">
-              {sourceResults.map((record) => (
-                <button
-                  key={record.id}
-                  type="button"
-                  className="rounded-lg border bg-background px-3 py-2 text-left hover:bg-muted"
-                  onClick={() => chooseSource(record)}
-                >
-                  <strong>{record.inventoryNumber || 'Без инв. номера'}</strong>
-                  {' · '}
-                  {record.author || 'Без автора'}
-                  {' · '}
-                  {record.title || 'Без заглавия'}
-                </button>
-              ))}
-            </div>
+          {sourceError && (
+            <p className="mt-2 text-sm text-muted-foreground" role="status">
+              {sourceError}
+            </p>
           )}
         </section>
 
