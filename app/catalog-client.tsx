@@ -46,6 +46,7 @@ export type CatalogRecord = {
   loanStatus: string;
   verified: boolean;
   verifiedAt?: string;
+  updatedAt?: string;
   deleted: boolean;
   revision: number;
 };
@@ -68,6 +69,20 @@ const searchFields = [
   ['inventoryNumber', 'Инвентарный номер'], ['dbNumber', '№ записи в БД'],
 ] as const;
 
+const CATALOG_PAGE_SIZE = 200;
+type CatalogSort = 'author' | 'updated';
+
+const updatedAtFormatter = new Intl.DateTimeFormat('ru-RU', {
+  dateStyle: 'short',
+  timeStyle: 'short',
+});
+
+function formatUpdatedAt(value?: string) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : updatedAtFormatter.format(date);
+}
+
 export function CatalogClient({ userName }: { userName: string }) {
   const [records, setRecords] = useState(sampleRecords);
   const [apiAvailable, setApiAvailable] = useState<boolean | null>(null);
@@ -76,6 +91,12 @@ export function CatalogClient({ userName }: { userName: string }) {
   const [field, setField] = useState('all');
   const [showWrittenOff, setShowWrittenOff] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
+  const [sortMode, setSortMode] = useState<CatalogSort>('author');
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextOffset, setNextOffset] = useState(0);
+  const catalogRequestGeneration = useRef(0);
+  const loadingMoreRef = useRef(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRecord, setSelectedRecord] =
     useState<CatalogRecord | null>(null);
@@ -147,9 +168,13 @@ export function CatalogClient({ userName }: { userName: string }) {
   useEffect(() => {
     if (apiAvailable === false) return;
     const controller = new AbortController();
+    const generation = ++catalogRequestGeneration.current;
     const trimmedQuery = query.trim();
     const exactIdentifierField =
       field === 'inventoryNumber' || field === 'dbNumber';
+
+    loadingMoreRef.current = false;
+    setLoadingMore(false);
 
     if (
       trimmedQuery &&
@@ -157,6 +182,8 @@ export function CatalogClient({ userName }: { userName: string }) {
       trimmedQuery.length < 3
     ) {
       setRecords([]);
+      setHasMore(false);
+      setNextOffset(0);
       setNotice('Введите не менее 3 символов для общего поиска.');
       return () => controller.abort();
     }
@@ -169,35 +196,39 @@ export function CatalogClient({ userName }: { userName: string }) {
         field,
         writtenOff: showWrittenOff ? '1' : '0',
         trash: showDeleted ? '1' : '0',
+        sort: sortMode,
+        limit: String(CATALOG_PAGE_SIZE),
+        offset: '0',
       });
       try {
         const response = await fetch(`/api/catalog?${params}`, { signal: controller.signal });
         if (response.status === 401) {
           setApiAvailable(false);
+          setHasMore(false);
+          setNextOffset(0);
           setNotice('Локальная демонстрация: изменения сохраняются только до обновления страницы.');
           return;
         }
         if (!response.ok) throw new Error('catalog request failed');
         const payload = await response.json() as {
           items: Array<Record<string, unknown>>;
-          stats?: {
-            total?: number;
-            active?: number;
-            verified?: number;
-          } | null;
+          stats?: { total?: number; active?: number; verified?: number } | null;
         };
 
-        setRecords(payload.items.map(normalizeRecord));
+        if (generation !== catalogRequestGeneration.current) return;
+
+        const firstPage = payload.items.map(normalizeRecord);
+        setRecords(firstPage);
+        setNextOffset(firstPage.length);
+        setHasMore(firstPage.length === CATALOG_PAGE_SIZE);
 
         if (payload.stats) {
           const total = Number(payload.stats.total ?? 0);
-
           setServerStats({
             total,
             active: Number(payload.stats.active ?? 0),
             verified: Number(payload.stats.verified ?? 0),
           });
-
           setNotice(
             total > 0
               ? 'Рабочая база подключена. Изменения сохраняются автоматически.'
@@ -207,11 +238,59 @@ export function CatalogClient({ userName }: { userName: string }) {
 
         setApiAvailable(true);
       } catch (error) {
-        if ((error as Error).name !== 'AbortError') setNotice('Не удалось связаться с базой. Повторите попытку через несколько секунд.');
+        if ((error as Error).name !== 'AbortError') {
+          setNotice('Не удалось связаться с базой. Повторите попытку через несколько секунд.');
+        }
       }
     }, delay);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [apiAvailable, field, query, showDeleted, showWrittenOff, syncEpoch]);
+  }, [apiAvailable, field, query, showDeleted, showWrittenOff, sortMode, syncEpoch]);
+
+  const loadMoreCatalog = async () => {
+    if (apiAvailable !== true || !hasMore || loadingMoreRef.current) return;
+
+    const trimmedQuery = query.trim();
+    const exactIdentifierField =
+      field === 'inventoryNumber' || field === 'dbNumber';
+
+    if (trimmedQuery && !exactIdentifierField && trimmedQuery.length < 3) return;
+
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    const generation = catalogRequestGeneration.current;
+    const offset = nextOffset;
+    const params = new URLSearchParams({
+      q: trimmedQuery,
+      field,
+      writtenOff: showWrittenOff ? '1' : '0',
+      trash: showDeleted ? '1' : '0',
+      sort: sortMode,
+      limit: String(CATALOG_PAGE_SIZE),
+      offset: String(offset),
+    });
+
+    try {
+      const response = await fetch(`/api/catalog?${params}`);
+      if (!response.ok) throw new Error('catalog page request failed');
+      const payload = await response.json() as { items: Array<Record<string, unknown>> };
+      if (generation !== catalogRequestGeneration.current) return;
+
+      const page = payload.items.map(normalizeRecord);
+      setRecords((current) => {
+        const existing = new Set(current.map((record) => record.id));
+        return [...current, ...page.filter((record) => !existing.has(record.id))];
+      });
+      setNextOffset(offset + page.length);
+      setHasMore(page.length === CATALOG_PAGE_SIZE);
+    } catch {
+      if (generation === catalogRequestGeneration.current) {
+        reportActionError('Не удалось подгрузить следующую часть каталога.');
+      }
+    } finally {
+      loadingMoreRef.current = false;
+      if (generation === catalogRequestGeneration.current) setLoadingMore(false);
+    }
+  };
 
   useEffect(() => {
     const modelContext = (document as Document & { modelContext?: WebModelContext }).modelContext;
@@ -241,14 +320,23 @@ export function CatalogClient({ userName }: { userName: string }) {
   const selected = selectedRecord;
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase('ru');
-    return records.filter((record) => {
+    const filtered = records.filter((record) => {
       if (showDeleted ? !record.deleted : record.deleted) return false;
       if (!showWrittenOff && record.state === 'Списан') return false;
       if (!needle) return true;
       const values = field === 'all' ? Object.values(record) : [record[field as keyof CatalogRecord]];
       return values.some((value) => String(value).toLocaleLowerCase('ru').includes(needle));
     });
-  }, [field, query, records, showDeleted, showWrittenOff]);
+    if (sortMode === 'updated') {
+      return [...filtered].sort((left, right) => {
+        const leftTime = left.updatedAt ? Date.parse(left.updatedAt) : 0;
+        const rightTime = right.updatedAt ? Date.parse(right.updatedAt) : 0;
+        if (rightTime !== leftTime) return rightTime - leftTime;
+        return Number(right.id) - Number(left.id);
+      });
+    }
+    return filtered;
+  }, [field, query, records, showDeleted, showWrittenOff, sortMode]);
 
   const openRecord = async (recordId: string) => {
     const requestGeneration = ++openRecordRequest.current;
@@ -340,14 +428,18 @@ export function CatalogClient({ userName }: { userName: string }) {
     recordId: string,
     patch: Partial<CatalogRecord>,
   ) => {
+    const stampedPatch = {
+      ...patch,
+      updatedAt: patch.updatedAt ?? new Date().toISOString(),
+    };
     setRecords((current) => current.map((record) =>
-      record.id === recordId ? { ...record, ...patch } : record,
+      record.id === recordId ? { ...record, ...stampedPatch } : record,
     ));
     setSelectedRecord((current) =>
-      current?.id === recordId ? { ...current, ...patch } : current,
+      current?.id === recordId ? { ...current, ...stampedPatch } : current,
     );
     setRecordCache((current) => current[recordId]
-      ? { ...current, [recordId]: { ...current[recordId], ...patch } }
+      ? { ...current, [recordId]: { ...current[recordId], ...stampedPatch } }
       : current,
     );
   };
@@ -370,6 +462,7 @@ export function CatalogClient({ userName }: { userName: string }) {
       verifiedAt: next.verifiedAt,
       deleted: next.deleted,
       loanStatus: next.loanStatus,
+      updatedAt: new Date().toISOString(),
       revision,
     };
 
@@ -407,6 +500,7 @@ export function CatalogClient({ userName }: { userName: string }) {
       ...record,
       verified,
       verifiedAt: verified ? new Date().toLocaleDateString('ru-RU') : undefined,
+      updatedAt: new Date().toISOString(),
       revision: Number(result.payload?.revision ?? record.revision + 1),
     };
     setRecords((current) =>
@@ -645,21 +739,70 @@ export function CatalogClient({ userName }: { userName: string }) {
           <Select value={field} onValueChange={(value) => value && setField(value)}><SelectTrigger className="h-11 w-full xl:w-56" aria-label="Поле поиска"><SelectValue /></SelectTrigger><SelectContent>{searchFields.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select>
           <label className="flex min-h-11 items-center gap-3 rounded-lg border px-3 text-sm"><Checkbox checked={showWrittenOff} onCheckedChange={setShowWrittenOff} />Списанные</label>
           <label className="flex min-h-11 items-center gap-3 rounded-lg border px-3 text-sm"><Checkbox checked={showDeleted} onCheckedChange={setShowDeleted} />Корзина</label>
+          <Select value={sortMode} onValueChange={(value) => value && setSortMode(value as CatalogSort)}>
+            <SelectTrigger className="h-11 w-full xl:w-56" aria-label="Сортировка каталога"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="author">По автору и заглавию</SelectItem>
+              <SelectItem value="updated">Последние изменения</SelectItem>
+            </SelectContent>
+          </Select>
           <Button className="h-11 gap-2" onClick={() => setAddOpen(true)}><CirclePlus /> Добавить</Button>
           <Button variant="outline" className="h-11 gap-2" onClick={exportCsv}><Download /> Скачать CSV</Button>
         </div>
-        <div className="flex items-center justify-between border-b bg-muted/35 px-4 py-2.5 text-sm text-muted-foreground"><span>Найдено: <strong className="text-foreground">{visible.length}</strong></span><span className="hidden sm:inline">Нажмите на строку, чтобы открыть карточку</span></div>
-        <Table><TableHeader><TableRow className="bg-primary/5 hover:bg-primary/5"><TableHead className="w-36 pl-4">Инвентарный номер</TableHead><TableHead className="w-28">№ записи в БД</TableHead><TableHead className="w-28">Проверено</TableHead><TableHead>Автор</TableHead><TableHead className="min-w-72">Заглавие</TableHead><TableHead>Год</TableHead><TableHead>Статус</TableHead></TableRow></TableHeader><TableBody>{visible.map((record) => <TableRow key={record.id} tabIndex={0} role="button" onClick={() => void openRecord(record.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') void openRecord(record.id); }} className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"><TableCell className="pl-4 font-mono text-sm font-semibold">{record.inventoryNumber || '—'}</TableCell><TableCell className="font-mono text-sm text-muted-foreground">{record.dbNumber || '—'}</TableCell><TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell><TableCell className="font-medium">{record.author || 'Без автора'}</TableCell><TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell><TableCell>{record.year || '—'}</TableCell><TableCell>
-    <Badge
-      variant="outline"
-      className={loanStatusClass(record.loanStatus, {
-        deleted: record.deleted,
-        writtenOff: record.state === 'Списан',
-      })}
-    >
-      {record.deleted ? 'В корзине' : record.loanStatus}
-    </Badge>
-  </TableCell></TableRow>)}</TableBody></Table>
+        <div className="flex items-center justify-between border-b bg-muted/35 px-4 py-2.5 text-sm text-muted-foreground">
+          <span>Загружено: <strong className="text-foreground">{visible.length}</strong>{hasMore ? ' · прокрутите вниз для продолжения' : ''}</span>
+          <span className="hidden sm:inline">Нажмите на строку, чтобы открыть карточку</span>
+        </div>
+        <div
+          className="max-h-[65vh] overflow-auto"
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            if (element.scrollHeight - element.scrollTop - element.clientHeight < 320) {
+              void loadMoreCatalog();
+            }
+          }}
+        >
+          <Table>
+            <TableHeader className="sticky top-0 z-10 bg-card shadow-sm">
+              <TableRow className="bg-primary/5 hover:bg-primary/5">
+                <TableHead className="w-36 pl-4">Инвентарный номер</TableHead>
+                <TableHead className="w-28">№ записи в БД</TableHead>
+                <TableHead className="w-28">Проверено</TableHead>
+                <TableHead>Автор</TableHead>
+                <TableHead className="min-w-72">Заглавие</TableHead>
+                <TableHead>Год</TableHead>
+                <TableHead className="min-w-40">Изменено</TableHead>
+                <TableHead>Статус</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visible.map((record) => (
+                <TableRow key={record.id} tabIndex={0} role="button"
+                  onClick={() => void openRecord(record.id)}
+                  onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') void openRecord(record.id); }}
+                  className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none">
+                  <TableCell className="pl-4 font-mono text-sm font-semibold">{record.inventoryNumber || '—'}</TableCell>
+                  <TableCell className="font-mono text-sm text-muted-foreground">{record.dbNumber || '—'}</TableCell>
+                  <TableCell>{record.verified ? <Badge className="gap-1 bg-emerald-700"><CheckCircle2 /> Проверено</Badge> : <span className="text-muted-foreground">Нет</span>}</TableCell>
+                  <TableCell className="font-medium">{record.author || 'Без автора'}</TableCell>
+                  <TableCell className="max-w-md whitespace-normal font-medium">{record.title}</TableCell>
+                  <TableCell>{record.year || '—'}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{formatUpdatedAt(record.updatedAt)}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={loanStatusClass(record.loanStatus, {
+                      deleted: record.deleted,
+                      writtenOff: record.state === 'Списан',
+                    })}>
+                      {record.deleted ? 'В корзине' : record.loanStatus}
+                    </Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          {loadingMore && <div className="border-t px-4 py-3 text-center text-sm text-muted-foreground">Загружается следующая часть каталога…</div>}
+          {!hasMore && visible.length > 0 && <div className="border-t px-4 py-3 text-center text-xs text-muted-foreground">Все доступные записи загружены.</div>}
+        </div>
       </div>
     </section>
     <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) closeRecord(); }}><SheetContent className="overflow-y-auto" style={{ width: 'min(96vw, 1480px)', maxWidth: 'none' }}>{selected && <RecordCard key={selected.id} record={selected} apiAvailable={apiAvailable === true} onSave={saveRecord} onToggleVerified={toggleVerifiedRecord} onDelete={deleteRecord} onRestore={restoreRecord} onPurge={purgeRecord} onLoanChange={updateLoanStatus} onLoanNotice={confirmAction} />}</SheetContent></Sheet>
@@ -1158,6 +1301,7 @@ function normalizeRecord(raw: Record<string, unknown>): CatalogRecord {
     accountingStatus: string('accountingStatus'), fundType: string('fundType'), invoice: string('invoice'),
     state: string('state') === 'Списан' ? 'Списан' : 'В фонде', loanStatus: string('loanStatus') || 'В наличии',
     verified: raw.verified === true || raw.verified === 1, verifiedAt: string('verifiedAt') || undefined,
+    updatedAt: string('updatedAt') || undefined,
     deleted: Boolean(raw.deletedAt),
     revision: typeof raw.revision === 'number'
       ? raw.revision
