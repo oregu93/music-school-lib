@@ -18,7 +18,7 @@ flowchart LR
   E --> F[LIBRARIAN_UX-002<br/>Inventory mode toggle<br/>DONE]
   F --> K[LIBRARIAN_UX-010/011<br/>Export + RU labels<br/>DONE]
   K --> L[AUTH-I18N-001<br/>Russian OAuth<br/>DONE]
-  L --> M[LIBRARIAN_UX-013<br/>Focused mobile search<br/>READY_FOR_VALIDATION]
+  L --> M[LIBRARIAN_UX-013<br/>Focused mobile search<br/>DONE]
   M --> G[LIBRARIAN_UX-003<br/>Mobile scanning<br/>PLANNED]
   G --> H[LIBRARIAN_UX-009<br/>Functional QR/deep-link<br/>FUTURE]
   A --> I[OPERATIONS-001<br/>First-day observation<br/>OBSERVE]
@@ -41,7 +41,8 @@ flowchart LR
 | LIBRARIAN_UX-010 | DONE | CSV-экспорт скрыт за подсвеченным двухшаговым контролом «Экспорт каталога». |
 | LIBRARIAN_UX-012 | DONE | Компактный статус синхронизации; ручная отправка показывается только при наличии ожидающих операций. |
 | LIBRARIAN_UX-011 | DONE | Категории поиска и сортировки отображаются по-русски, внутренние API-значения пользователю не показываются. |
-| LIBRARIAN_UX-013 | READY_FOR_VALIDATION | На телефоне/планшете фокус по поиску открывает отдельный viewport-aware режим: результаты прокручиваются над строкой поиска, строка следует за видимой областью над экранной клавиатурой; desktop UX не изменяется. |
+| LIBRARIAN_UX-013 | DONE | На телефоне/планшете фокус по поиску открывает отдельный viewport-aware режим: результаты прокручиваются над строкой поиска, строка следует за видимой областью над экранной клавиатурой; desktop UX не изменяется. |
+| LIBRARIAN_UX-014 | PLANNED | Убрать «№ записи в БД» из пользовательского списка категорий поиска, сохранив `dbNumber` в API и поиске «Все поля»; низкий приоритет. |
 | AUTH-I18N-001 | DONE | OAuth authorization через `oauth.yandex.ru`; Vercel relay поддерживает русский hostname и сохраняет callback. |
 | AUTH-SESSION-002 | PLANNED | Завершение сессии после 2 часов отсутствия активности при сохранении абсолютного максимального срока сессии. |
 | OPERATIONS-001 | OBSERVE | Проверка pending/conflict и резервная копия после первого рабочего дня. |
