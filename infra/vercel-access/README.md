@@ -23,3 +23,8 @@ https://mlc-vercel-access.vercel.app/api/auth/callback
 ```
 
 Do not place credentials or `.dev.vars` in this directory.
+
+
+## OAuth language
+
+The Worker redirects users to the documented Russian endpoint `https://oauth.yandex.ru/authorize`. The gateway login relay accepts both `oauth.yandex.ru` and `oauth.yandex.com` so that the public Vercel callback is preserved.
