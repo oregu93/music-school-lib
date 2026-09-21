@@ -18,3 +18,31 @@
 2. Самостоятельный Cloudflare Worker: тот же интерфейс и D1, собственный домен и внешний OAuth.
 
 Яндекс OAuth относится только ко второму режиму. В старом `w-schedule` найдены решения, которые нельзя переносить: токен в `localStorage`, вывод токена в журнал и предоставление прав любому вошедшему аккаунту.
+
+
+## Пользовательский access gateway
+
+Основной пользовательский адрес:
+
+```text
+https://mlc-vercel-access.vercel.app/
+```
+
+Vercel выполняет роль access gateway и проксирует запросы в production Cloudflare Worker. Данные не дублируются: оба маршрута работают с одним Worker и одной production D1.
+
+```text
+browser / phone
+      |
+      v
+mlc-vercel-access.vercel.app
+      |
+      v
+music-school-library.oregu93.workers.dev
+      |
+      v
+production D1
+```
+
+`workers.dev` сохраняется как технический backend/резервный маршрут. Пользовательские ярлыки, help и QR должны указывать на Vercel.
+
+Сессии браузера и локальная offline/outbox-очередь привязаны к origin. Поэтому перед переходом между Vercel и прямым Cloudflare URL необходимо дождаться состояния «Синхронизировано».
