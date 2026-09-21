@@ -789,8 +789,8 @@ export function CatalogClient({ userName }: { userName: string }) {
             }
           }}
         >
-          <Table>
-            <TableHeader className="sticky top-0 z-10 bg-card shadow-sm">
+          <Table containerClassName="overflow-visible">
+            <TableHeader className="[&_th]:sticky [&_th]:top-0 [&_th]:z-20 [&_th]:bg-card [&_th]:shadow-[0_1px_0_hsl(var(--border))]">
               <TableRow className="bg-primary/5 hover:bg-primary/5">
                 <TableHead className="w-36 pl-4">Инвентарный номер</TableHead>
                 <TableHead className="w-28">№ записи в БД</TableHead>
@@ -1552,7 +1552,6 @@ function AddCopyDialog({
           <DialogTitle>Новый экземпляр</DialogTitle>
           <DialogDescription>
             Заполните карточку сразу. Инвентарный номер — основной номер экземпляра.
-            Поле «№ записи в БД» при добавлении не требуется.
           </DialogDescription>
         </DialogHeader>
 
