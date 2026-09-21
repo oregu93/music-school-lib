@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "https://music-school-library.oregu93.workers.dev/"
+    },
+    {
+      "source": "/:path*",
+      "destination": "https://music-school-library.oregu93.workers.dev/:path*"
+    }
+  ]
+}
