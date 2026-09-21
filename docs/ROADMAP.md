@@ -16,7 +16,9 @@ flowchart LR
   C --> D[LIBRARIAN_UX-004<br/>Recent changes<br/>READY_FOR_VALIDATION]
   D --> E[LIBRARIAN_UX-005/006/007<br/>Add-record form<br/>READY_FOR_VALIDATION]
   E --> F[LIBRARIAN_UX-002<br/>Inventory mode toggle<br/>READY_FOR_VALIDATION]
-  F --> G[LIBRARIAN_UX-003<br/>Mobile scanning<br/>PLANNED]
+  F --> K[LIBRARIAN_UX-010/011<br/>Export + RU labels<br/>READY_FOR_VALIDATION]
+  K --> L[AUTH-I18N-001<br/>Russian OAuth<br/>READY_FOR_VALIDATION]
+  L --> G[LIBRARIAN_UX-003<br/>Mobile scanning<br/>PLANNED]
   G --> H[LIBRARIAN_UX-009<br/>Functional QR/deep-link<br/>FUTURE]
   A --> I[OPERATIONS-001<br/>First-day observation<br/>OBSERVE]
   I --> J[OPERATIONS-002<br/>USB scanner<br/>PLANNED]
@@ -32,9 +34,12 @@ flowchart LR
 | LIBRARIAN_UX-004 | READY_FOR_VALIDATION | Сортировка по автору/заглавию или по `updated_at DESC`; колонка «Изменено». |
 | LIBRARIAN_UX-005 | READY_FOR_VALIDATION | Добавление экземпляра сразу через полный формуляр; инвентарный номер основной, `db_number` необязателен и при создании остаётся пустым. |
 | LIBRARIAN_UX-006 | READY_FOR_VALIDATION | Заглавие и другие многострочные поля автоматически растут по содержимому. |
-| LIBRARIAN_UX-007 | READY_FOR_VALIDATION | Основа новой карточки ищется на сервере по автору или инвентарному номеру. |
+| LIBRARIAN_UX-007 | READY_FOR_VALIDATION | Поле основы пустое по умолчанию; ввод автора или инвентарного номера автоматически открывает список релевантных карточек. |
 | LIBRARIAN_UX-008 | READY_FOR_VALIDATION | Старый QR-блок с библиографическими данными удалён из карточки. |
 | LIBRARIAN_UX-009 | FUTURE | Возвращать QR только как функциональный deep-link/инвентаризационный сценарий, если он действительно нужен. |
+| LIBRARIAN_UX-010 | READY_FOR_VALIDATION | CSV-экспорт скрыт за компактным двухшаговым контролом «Экспорт». |
+| LIBRARIAN_UX-011 | READY_FOR_VALIDATION | Категории поиска и сортировки отображаются по-русски, внутренние API-значения пользователю не показываются. |
+| AUTH-I18N-001 | READY_FOR_VALIDATION | OAuth authorization через `oauth.yandex.ru`; Vercel relay поддерживает русский hostname и сохраняет callback. |
 | OPERATIONS-001 | OBSERVE | Проверка pending/conflict и резервная копия после первого рабочего дня. |
 | OPERATIONS-002 | PLANNED | Acceptance-test USB-сканера. |
 | PLATFORM-001 | PLANNED | PWA/offline hardening. |
