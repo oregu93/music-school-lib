@@ -117,7 +117,7 @@ export default function App() {
               <p className="mt-1 text-muted-foreground">
                 Если работа на этом компьютере закончена,
                 выйдите также из Яндекс ID и закройте
-                все окна Firefox.
+                все окна браузера.
               </p>
             </div>
           )}
