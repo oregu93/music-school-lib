@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowUpFromLine, BookOpen, CheckCircle2, CircleAlert, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, BookOpen, CheckCircle2, CircleAlert, CirclePlus, Download, History, Library, RotateCcw, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -74,11 +74,27 @@ function searchFieldLabel(value: string) {
 
 const CATALOG_PAGE_SIZE = 200;
 type CatalogSort = 'author' | 'updated';
+type CatalogSortDirection = 'asc' | 'desc';
 
 function catalogSortLabel(value: CatalogSort) {
   return value === 'updated'
     ? 'Последние изменения'
     : 'По автору и заглавию';
+}
+
+function catalogSortDirectionLabel(
+  sort: CatalogSort,
+  direction: CatalogSortDirection,
+) {
+  if (sort === 'updated') {
+    return direction === 'desc'
+      ? 'Сначала новые'
+      : 'Сначала старые';
+  }
+
+  return direction === 'desc'
+    ? 'Я → А'
+    : 'А → Я';
 }
 
 const updatedAtFormatter = new Intl.DateTimeFormat('ru-RU', {
@@ -101,6 +117,8 @@ export function CatalogClient({ userName }: { userName: string }) {
   const [showWrittenOff, setShowWrittenOff] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
   const [sortMode, setSortMode] = useState<CatalogSort>('author');
+  const [sortDirection, setSortDirection] =
+    useState<CatalogSortDirection>('asc');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextOffset, setNextOffset] = useState(0);
@@ -206,6 +224,7 @@ export function CatalogClient({ userName }: { userName: string }) {
         writtenOff: showWrittenOff ? '1' : '0',
         trash: showDeleted ? '1' : '0',
         sort: sortMode,
+        direction: sortDirection,
         limit: String(CATALOG_PAGE_SIZE),
         offset: '0',
       });
@@ -253,7 +272,7 @@ export function CatalogClient({ userName }: { userName: string }) {
       }
     }, delay);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [apiAvailable, field, query, showDeleted, showWrittenOff, sortMode, syncEpoch]);
+  }, [apiAvailable, field, query, showDeleted, showWrittenOff, sortDirection, sortMode, syncEpoch]);
 
   const loadMoreCatalog = async () => {
     if (apiAvailable !== true || !hasMore || loadingMoreRef.current) return;
@@ -274,6 +293,7 @@ export function CatalogClient({ userName }: { userName: string }) {
       writtenOff: showWrittenOff ? '1' : '0',
       trash: showDeleted ? '1' : '0',
       sort: sortMode,
+      direction: sortDirection,
       limit: String(CATALOG_PAGE_SIZE),
       offset: String(offset),
     });
@@ -336,16 +356,35 @@ export function CatalogClient({ userName }: { userName: string }) {
       const values = field === 'all' ? Object.values(record) : [record[field as keyof CatalogRecord]];
       return values.some((value) => String(value).toLocaleLowerCase('ru').includes(needle));
     });
-    if (sortMode === 'updated') {
-      return [...filtered].sort((left, right) => {
+    const direction = sortDirection === 'desc' ? -1 : 1;
+
+    return [...filtered].sort((left, right) => {
+      if (sortMode === 'updated') {
         const leftTime = left.updatedAt ? Date.parse(left.updatedAt) : 0;
         const rightTime = right.updatedAt ? Date.parse(right.updatedAt) : 0;
-        if (rightTime !== leftTime) return rightTime - leftTime;
-        return Number(right.id) - Number(left.id);
-      });
-    }
-    return filtered;
-  }, [field, query, records, showDeleted, showWrittenOff, sortMode]);
+        if (leftTime !== rightTime) {
+          return (leftTime - rightTime) * direction;
+        }
+        return (Number(left.id) - Number(right.id)) * direction;
+      }
+
+      const authorCompare = left.author.localeCompare(
+        right.author,
+        'ru',
+        { sensitivity: 'base' },
+      );
+      if (authorCompare !== 0) return authorCompare * direction;
+
+      const titleCompare = left.title.localeCompare(
+        right.title,
+        'ru',
+        { sensitivity: 'base' },
+      );
+      if (titleCompare !== 0) return titleCompare * direction;
+
+      return (Number(left.id) - Number(right.id)) * direction;
+    });
+  }, [field, query, records, showDeleted, showWrittenOff, sortDirection, sortMode]);
 
   const openRecord = async (recordId: string) => {
     const requestGeneration = ++openRecordRequest.current;
@@ -690,43 +729,75 @@ export function CatalogClient({ userName }: { userName: string }) {
   );
 
   return <main className="min-h-screen bg-background text-foreground">
-    <header className="library-header border-b px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4"><div className="flex items-center gap-3"><div className="grid size-11 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Library className="size-6" /></div><div><h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">Электронный каталог</h1><p className="text-sm text-muted-foreground">Библиотека музыкальной школы</p></div></div><div className="flex items-center gap-2">
-    <Badge
-      variant="outline"
-      className="hidden h-7 gap-1.5 px-3 sm:flex"
-    >
-      <ShieldCheck /> {userName}
-    </Badge>
+    <header className="library-header border-b px-5 py-4 lg:px-8">
+      <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="grid size-11 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Library className="size-6" />
+          </div>
+          <div>
+            <h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">
+              Электронный каталог
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Библиотека музыкальной школы
+            </p>
+          </div>
+        </div>
 
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={() => {
-        window.location.href = '/api/auth/logout';
-      }}
-    >
-      Выйти
-    </Button>
-  </div></div></header>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Badge
+            variant="outline"
+            className={
+              syncCounts.conflict > 0 || syncCounts.failed > 0
+                ? 'border-rose-300 bg-rose-50 text-rose-800'
+                : syncCounts.pending > 0
+                  ? 'border-amber-300 bg-amber-50 text-amber-800'
+                  : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+            }
+            title="Изменения обычно отправляются на сервер автоматически. Ручная отправка нужна только для ожидающих изменений."
+          >
+            {syncCounts.conflict > 0
+              ? `Конфликт: ${syncCounts.conflict}`
+              : syncCounts.failed > 0
+                ? `Ошибка сохранения: ${syncCounts.failed}`
+                : syncCounts.pending > 0
+                  ? `Ожидает отправки: ${syncCounts.pending}`
+                  : 'Синхронизировано'}
+          </Badge>
+
+          {syncCounts.pending > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              title="Повторно отправить на сервер изменения, сохранённые на этом устройстве."
+              onClick={() => void synchronize()}
+            >
+              Отправить ожидающие
+            </Button>
+          )}
+
+          <Badge
+            variant="outline"
+            className="hidden h-7 gap-1.5 px-3 sm:flex"
+          >
+            <ShieldCheck /> {userName}
+          </Badge>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.location.href = '/api/auth/logout';
+            }}
+          >
+            Выйти
+          </Button>
+        </div>
+      </div>
+    </header>
     <section className="mx-auto max-w-[1600px] p-4 lg:p-8">
       <div className={noticeIsSuccess ? 'mb-4 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950' : 'mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950'} role="status">{notice}</div>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3 text-sm">
-        <strong>{syncCounts.conflict > 0
-          ? `Конфликт: ${syncCounts.conflict}`
-          : syncCounts.failed > 0
-            ? 'Ошибка синхронизации'
-            : syncCounts.pending > 0
-              ? `Ожидает синхронизации: ${syncCounts.pending}`
-              : 'Синхронизировано'}</strong>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={syncCounts.pending === 0}
-          onClick={() => void synchronize()}
-        >
-          Синхронизировать
-        </Button>
-      </div>
       <div className="mb-5 grid gap-3 sm:grid-cols-3"><Summary label="Экземпляров" value={String(totalCount)} muted={apiAvailable ? undefined : 'в демонстрации'} /><Summary label="В фонде" value={String(activeCount)} /><Summary label="Проверено" value={String(verifiedCount)} /></div>
       <InventoryPanel
         onOpenRecord={(recordId) => { void openRecord(recordId); }}
@@ -748,19 +819,43 @@ export function CatalogClient({ userName }: { userName: string }) {
           </Select>
           <label className="flex min-h-11 items-center gap-3 rounded-lg border px-3 text-sm"><Checkbox checked={showWrittenOff} onCheckedChange={setShowWrittenOff} />Списанные</label>
           <label className="flex min-h-11 items-center gap-3 rounded-lg border px-3 text-sm"><Checkbox checked={showDeleted} onCheckedChange={setShowDeleted} />Корзина</label>
-          <Select value={sortMode} onValueChange={(value) => value && setSortMode(value as CatalogSort)}>
-            <SelectTrigger className="h-11 w-full xl:w-56" aria-label="Сортировка каталога">
-              <span className="flex-1 text-left">{catalogSortLabel(sortMode)}</span>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="author">По автору и заглавию</SelectItem>
-              <SelectItem value="updated">Последние изменения</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex w-full gap-2 xl:w-auto">
+            <Select
+              value={sortMode}
+              onValueChange={(value) => {
+                if (!value) return;
+                const next = value as CatalogSort;
+                setSortMode(next);
+                setSortDirection(next === 'updated' ? 'desc' : 'asc');
+              }}
+            >
+              <SelectTrigger className="h-11 flex-1 xl:w-56" aria-label="Сортировка каталога">
+                <span className="flex-1 text-left">{catalogSortLabel(sortMode)}</span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="author">По автору и заглавию</SelectItem>
+                <SelectItem value="updated">Последние изменения</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Button
+              variant="outline"
+              className="h-11 min-w-11"
+              aria-label={`Порядок сортировки: ${catalogSortDirectionLabel(sortMode, sortDirection)}`}
+              title={`Порядок сортировки: ${catalogSortDirectionLabel(sortMode, sortDirection)}`}
+              onClick={() => setSortDirection((current) =>
+                current === 'asc' ? 'desc' : 'asc'
+              )}
+            >
+              {sortDirection === 'asc'
+                ? <ArrowUp />
+                : <ArrowDown />}
+            </Button>
+          </div>
           <Button className="h-11 gap-2" onClick={() => setAddOpen(true)}><CirclePlus /> Добавить</Button>
           <details className="relative">
-            <summary className="flex h-11 cursor-pointer list-none items-center gap-2 rounded-lg border px-3 text-sm font-medium text-muted-foreground hover:bg-muted [&::-webkit-details-marker]:hidden">
-              Экспорт
+            <summary className="flex h-11 cursor-pointer list-none items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 text-sm font-medium text-primary shadow-sm hover:bg-primary/15 [&::-webkit-details-marker]:hidden">
+              <Download /> Экспорт каталога
             </summary>
             <div className="absolute right-0 z-30 mt-1 w-64 rounded-lg border bg-popover p-3 shadow-lg">
               <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
@@ -1120,16 +1215,16 @@ function RecordCard({ record, apiAvailable, onSave, onToggleVerified, onDelete, 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <Field label="Инвентарный номер" value={draft.inventoryNumber} onChange={(v) => update('inventoryNumber', v)} />
         <Field label="№ записи в БД" value={draft.dbNumber} onChange={(v) => update('dbNumber', v)} />
-        <Field label="Автор" value={draft.author} onChange={(v) => update('author', v)} />
+        <Field label="Автор" value={draft.author} onChange={(v) => update('author', v)} multiline />
         <Field label="Год издания" value={draft.year} onChange={(v) => update('year', v)} />
         <Field label="Заглавие" value={draft.title} onChange={(v) => update('title', v)} wide multiline />
         <Field label="Полные сведения" value={draft.titleFull} onChange={(v) => update('titleFull', v)} wide multiline />
-        <Field label="Сведения об издании" value={draft.edition} onChange={(v) => update('edition', v)} wide />
-        <Field label="Издательство" value={draft.publisher} onChange={(v) => update('publisher', v)} />
-        <Field label="Шифр хранения" value={draft.shelfmark} onChange={(v) => update('shelfmark', v)} />
-        <Field label="Местонахождение" value={draft.location} onChange={(v) => update('location', v)} />
+        <Field label="Сведения об издании" value={draft.edition} onChange={(v) => update('edition', v)} wide multiline />
+        <Field label="Издательство" value={draft.publisher} onChange={(v) => update('publisher', v)} multiline />
+        <Field label="Шифр хранения" value={draft.shelfmark} onChange={(v) => update('shelfmark', v)} multiline />
+        <Field label="Местонахождение" value={draft.location} onChange={(v) => update('location', v)} multiline />
         <Field label="Статус выдачи" value={draft.loanStatus} onChange={() => undefined} readOnly />
-        <Field label="Темы" value={draft.subjects} onChange={(v) => update('subjects', v)} wide />
+        <Field label="Темы" value={draft.subjects} onChange={(v) => update('subjects', v)} wide multiline />
         <Field label="Примечания" value={draft.notes} onChange={(v) => update('notes', v)} wide multiline />
       </div>
       <LoanPanel
@@ -1631,6 +1726,7 @@ function AddCopyDialog({
             label="Автор"
             value={draft.author}
             onChange={(value) => update('author', value)}
+            multiline
           />
           <Field
             label="Год издания"
@@ -1656,27 +1752,32 @@ function AddCopyDialog({
             value={draft.edition}
             onChange={(value) => update('edition', value)}
             wide
+            multiline
           />
           <Field
             label="Издательство"
             value={draft.publisher}
             onChange={(value) => update('publisher', value)}
+            multiline
           />
           <Field
             label="Шифр хранения"
             value={draft.shelfmark}
             onChange={(value) => update('shelfmark', value)}
+            multiline
           />
           <Field
             label="Местонахождение"
             value={draft.location}
             onChange={(value) => update('location', value)}
+            multiline
           />
           <Field
             label="Темы"
             value={draft.subjects}
             onChange={(value) => update('subjects', value)}
             wide
+            multiline
           />
           <Field
             label="Примечания"
