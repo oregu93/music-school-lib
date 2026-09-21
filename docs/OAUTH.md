@@ -2,7 +2,7 @@
 
 ## Текущая архитектура
 
-Каталог использует Yandex ID напрямую через Cloudflare Worker.
+Каталог использует Yandex ID через production Cloudflare Worker. Для пользовательского доступа используется Vercel access gateway, который проксирует OAuth-маршруты и остальные запросы к тому же Worker.
 
 Используется:
 
@@ -124,3 +124,17 @@ http://localhost:5173/api/auth/callback
 
 Перед production/staging deployment соответствующий HTTPS callback
 нужно добавить в настройках Yandex OAuth.
+
+
+## Production redirect URI
+
+В Yandex OAuth должны оставаться зарегистрированы оба callback:
+
+```text
+https://music-school-library.oregu93.workers.dev/api/auth/callback
+https://mlc-vercel-access.vercel.app/api/auth/callback
+```
+
+Основной пользовательский адрес — Vercel. Прямой `workers.dev` используется как технический backend/резервный маршрут.
+
+Для повторного входа используется `force_confirm=yes`. Выход из каталога завершает серверную сессию каталога; на общем устройстве пользователь должен отдельно выйти из Яндекс ID.
