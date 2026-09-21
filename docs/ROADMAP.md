@@ -28,7 +28,7 @@ flowchart LR
 | --- | --- | --- |
 | OPERATIONS-003 | DONE | Пользовательский доступ через `https://mlc-vercel-access.vercel.app/`; Cloudflare Worker остаётся backend. |
 | HELP-AUTH-002 | READY_FOR_VALIDATION | Инструкция без привязки к браузеру; отдельный вход с компьютера и телефона; корректное завершение работы. |
-| LIBRARIAN_UX-001 | READY_FOR_VALIDATION | Собственная прокрутка таблицы; подгрузка по 200 записей при приближении к низу. |
+| LIBRARIAN_UX-001 | READY_FOR_VALIDATION | Собственная прокрутка таблицы; подгрузка по 200 записей при приближении к низу; заголовок таблицы фиксирован внутри области прокрутки. |
 | LIBRARIAN_UX-002 | READY_FOR_VALIDATION | Явно включаемый/выключаемый режим инвентаризации; безопасное выключенное состояние по умолчанию. |
 | LIBRARIAN_UX-003 | PLANNED | Камера телефона для штрихкода/QR. |
 | LIBRARIAN_UX-004 | READY_FOR_VALIDATION | Сортировка по автору/заглавию или по `updated_at DESC`; колонка «Изменено». |
@@ -40,6 +40,7 @@ flowchart LR
 | LIBRARIAN_UX-010 | READY_FOR_VALIDATION | CSV-экспорт скрыт за компактным двухшаговым контролом «Экспорт». |
 | LIBRARIAN_UX-011 | READY_FOR_VALIDATION | Категории поиска и сортировки отображаются по-русски, внутренние API-значения пользователю не показываются. |
 | AUTH-I18N-001 | READY_FOR_VALIDATION | OAuth authorization через `oauth.yandex.ru`; Vercel relay поддерживает русский hostname и сохраняет callback. |
+| AUTH-SESSION-002 | PLANNED | Завершение сессии после 2 часов отсутствия активности при сохранении абсолютного максимального срока сессии. |
 | OPERATIONS-001 | OBSERVE | Проверка pending/conflict и резервная копия после первого рабочего дня. |
 | OPERATIONS-002 | PLANNED | Acceptance-test USB-сканера. |
 | PLATFORM-001 | PLANNED | PWA/offline hardening. |
