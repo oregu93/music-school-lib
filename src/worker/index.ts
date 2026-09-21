@@ -466,6 +466,11 @@ async function getCatalog(
       ? "updated"
       : "author";
 
+  const direction =
+    params.get("direction") === "desc"
+      ? "desc"
+      : "asc";
+
   const requestedLimit =
     Number(params.get("limit") ?? 200);
 
@@ -534,8 +539,12 @@ async function getCatalog(
 
   const orderBy =
     sort === "updated"
-      ? "updated_at DESC, id DESC"
-      : "author COLLATE NOCASE, title COLLATE NOCASE, id";
+      ? direction === "desc"
+        ? "updated_at DESC, id DESC"
+        : "updated_at ASC, id ASC"
+      : direction === "desc"
+        ? "json_extract(search_text, '$.author') DESC, json_extract(search_text, '$.title') DESC, id DESC"
+        : "json_extract(search_text, '$.author') ASC, json_extract(search_text, '$.title') ASC, id ASC";
 
   const list = await env.DB
     .prepare(`
@@ -582,6 +591,7 @@ async function getCatalog(
     limit,
     offset,
     sort,
+    direction,
   });
 }
 
