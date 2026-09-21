@@ -32,6 +32,15 @@ GET /api/session
 
 ## Yandex OAuth
 
+Для пользовательской страницы авторизации используется русскоязычный endpoint:
+
+```text
+https://oauth.yandex.ru/authorize
+```
+
+Backend-обмен кода также выполняется через `oauth.yandex.ru/token`.
+Отдельный недокументированный параметр языка не используется.
+
 Для приложения требуется:
 
 ```text
@@ -138,3 +147,10 @@ https://mlc-vercel-access.vercel.app/api/auth/callback
 Основной пользовательский адрес — Vercel. Прямой `workers.dev` используется как технический backend/резервный маршрут.
 
 Для повторного входа используется `force_confirm=yes`. Выход из каталога завершает серверную сессию каталога; на общем устройстве пользователь должен отдельно выйти из Яндекс ID.
+
+
+## Локализация страницы входа
+
+Production Worker формирует OAuth-запрос через `oauth.yandex.ru`, а не `oauth.yandex.com`. Vercel access gateway принимает оба hostname и сохраняет публичный Vercel callback.
+
+Перед production-развёртыванием изменения OAuth необходимо одновременно проверить на Vercel gateway и на прямом Cloudflare маршруте.
