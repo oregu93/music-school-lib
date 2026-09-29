@@ -1,6 +1,6 @@
 # Аудит готовности MLC к публикации
 
-Статус: **HOLD — secret/PII scan истории фактически пройден. Осталось завершить dependency/license review и выбрать open-source лицензию перед переводом репозитория в public.**
+Статус: **HOLD — secret/PII scan и dependency-license review пройдены; выбрана AGPL-3.0-or-later. До Public осталось добавить полный стандартный текст LICENSE и проверить GitHub Actions/artifacts.**
 
 Дата: 29 сентября 2026 года.
 
@@ -64,7 +64,11 @@ git log --all -p -- . ':!pnpm-lock.yaml' \
 
 ### Зависимости
 
-Проверить лицензии runtime/dev dependencies и убедиться, что проект не содержит скопированных сторонних файлов с несовместимой лицензией.
+Проверка `pnpm licenses list --prod` и `pnpm licenses list --dev` выполнена.
+
+Результат: **PASS**. Прямые runtime-зависимости используют permissive-лицензии (в основном MIT/ISC/Apache-2.0). В dev/transitive tree присутствуют также BSD, MPL-2.0, LGPL-3.0-or-later, CC0/CC-BY, Python-2.0 и BlueOak; явного блокера для лицензирования собственного кода MLC как AGPL-3.0-or-later не выявлено.
+
+Добавлен `THIRD_PARTY_NOTICES.md`. При изменении dependency tree проверку следует повторять.
 
 ### Данные и изображения
 
@@ -86,7 +90,7 @@ git log --all -p -- . ':!pnpm-lock.yaml' \
 - PII scan: PASS;
 - Actions/artifacts: PASS или отсутствуют;
 - dependency/license review: PASS;
-- выбран и добавлен `LICENSE`;
+- выбрана лицензия `AGPL-3.0-or-later`; полный стандартный текст `LICENSE` должен быть добавлен перед Public;
 - README явно указывает назначение, отсутствие bundled production data и порядок безопасного deployment;
 - отсутствуют реальные секреты, персональные данные и production dumps.
 
@@ -107,3 +111,24 @@ git log --all -p -- . ':!pnpm-lock.yaml' \
 После публикации исходный код может быть склонирован или форкнут. Возврат репозитория в private не отзывает уже сделанные локальные копии, а публичные forks могут остаться публичными как отделённые репозитории.
 
 Поэтому перевод в public рассматривается как фактически необратимое раскрытие опубликованной версии кода.
+
+
+## 8. Принятое лицензионное решение
+
+Выбрано:
+
+```text
+AGPL-3.0-or-later
+```
+
+Цель: сохранить MLC открытым проектом, разрешая коммерческое внедрение, адаптацию, сопровождение и хостинг, но не превращая модифицированную сетевую версию в закрытую производную без выполнения условий AGPL.
+
+В репозиторий добавлены:
+
+- `CONTRIBUTING.md`;
+- `SECURITY.md`;
+- `THIRD_PARTY_NOTICES.md`;
+- metadata `license: AGPL-3.0-or-later` в `package.json`;
+- разделы README об open-source модели и AI-assisted development.
+
+Полный неизменённый текст GNU AGPL v3 ещё должен быть добавлен в корневой `LICENSE`.
