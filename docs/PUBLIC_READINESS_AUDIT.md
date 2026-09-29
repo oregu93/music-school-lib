@@ -1,6 +1,6 @@
 # Аудит готовности MLC к публикации
 
-Статус: **HOLD — secret/PII scan, dependency-license review и GitHub Actions/artifacts review пройдены; выбрана AGPL-3.0-or-later. До Public осталось добавить полный стандартный текст LICENSE и выполнить финальный visibility switch.**
+Статус: **PASS — репозиторий готов к переводу в public. Secret/PII scan, dependency-license review и GitHub Actions/artifacts review пройдены; полный стандартный текст GNU AGPL v3 добавлен в корень как `LICENSE`.**
 
 Дата: 29 сентября 2026 года.
 
@@ -92,7 +92,7 @@ git log --all -p -- . ':!pnpm-lock.yaml' \
 - PII scan: PASS;
 - Actions/artifacts: PASS или отсутствуют;
 - dependency/license review: PASS;
-- выбрана лицензия `AGPL-3.0-or-later`; полный стандартный текст `LICENSE` должен быть добавлен перед Public;
+- выбрана лицензия `AGPL-3.0-or-later`; полный стандартный текст GNU AGPL v3 добавлен в корень как `LICENSE`;
 - README явно указывает назначение, отсутствие bundled production data и порядок безопасного deployment;
 - отсутствуют реальные секреты, персональные данные и production dumps.
 
@@ -133,4 +133,25 @@ AGPL-3.0-or-later
 - metadata `license: AGPL-3.0-or-later` в `package.json`;
 - разделы README об open-source модели и AI-assisted development.
 
-Полный неизменённый текст GNU AGPL v3 ещё должен быть добавлен в корневой `LICENSE`.
+Полный неизменённый текст GNU AGPL v3 добавлен в корневой `LICENSE` (commit `19d6258e682ff66a0e90bb20c621b9a018c1de08`).
+
+
+## 9. Финальный public-readiness verdict
+
+На 29 сентября 2026 года:
+
+```text
+CURRENT TREE          PASS
+FULL GIT HISTORY      PASS
+GITLEAKS              PASS (3 false positives: public OAuth Client ID)
+PII HISTORY           PASS
+RISKY FILE PATHS      PASS
+DEPENDENCY LICENSES   PASS
+GITHUB ACTIONS        PASS (0 workflow runs)
+PROJECT LICENSE       PASS (AGPL-3.0-or-later)
+PUBLICATION           READY
+```
+
+Перевод visibility в `Public` должен выполняться вручную владельцем репозитория в GitHub Settings.
+
+После публикации следует считать опубликованную версию кода фактически необратимо раскрытой: возврат repository в private не отзывает уже сделанные clones/forks.
