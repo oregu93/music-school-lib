@@ -2,7 +2,7 @@
 
 ## Перед staging и production
 
-1. PASS: скачать `library_catalog_full.csv` кнопкой «Скачать CSV» и проверить, что число строк без заголовка совпадает с `SELECT COUNT(*) FROM catalog_records`.
+1. PASS: скачать `library_catalog_full.csv` через «Экспорт каталога» → «Скачать каталог CSV» и проверить, что число строк без заголовка совпадает с `SELECT COUNT(*) FROM catalog_records`.
 2. PASS: сохранить экспорт D1: `wrangler d1 export <database-name> --remote --output backup-YYYYMMDD.sql --config <environment-config>`.
 3. PASS: сохранить CSV событий инвентаризации и контрольные суммы обоих файлов.
 4. FAIL: не продолжать миграцию, если количество строк или создание D1-экспорта не подтверждено.
@@ -18,3 +18,12 @@ CSV содержит все карточки, включая корзину, в�
 5. Только после PASS переключить staging binding на восстановленную базу.
 
 Процедура описана и локально проверяется на пустой SQLite миграциями. Удалённое восстановление D1 в этой работе не выполнялось.
+
+
+## Текущая эксплуатационная схема
+
+Production backup должен рассматриваться как независимый от пользовательского Vercel gateway: каноническая база находится в Cloudflare D1.
+
+Vercel redeploy не заменяет и не затрагивает D1 backup.
+
+При обычном frontend/Worker deployment без миграции схемы резервное копирование не обязательно выполнять заново каждый раз, но перед migrations, bulk import, destructive cleanup и иными рискованными операциями свежий backup обязателен.
