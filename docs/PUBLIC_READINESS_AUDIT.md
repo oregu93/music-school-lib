@@ -1,6 +1,6 @@
 # Аудит готовности MLC к публикации
 
-Статус: **PASS — репозиторий готов к переводу в public. Secret/PII scan, dependency-license review и GitHub Actions/artifacts review пройдены; полный стандартный текст GNU AGPL v3 добавлен в корень как `LICENSE`.**
+Статус: **HOLD — содержимое и история файлов прошли основные проверки, но финальный аудит выявил персональный email в metadata исторических Git commits. Перед Public требуется либо явное согласие на его раскрытие, либо переписывание author/committer metadata. Также рекомендуется удалить/архивировать несколько устаревших legacy-файлов.**
 
 Дата: 29 сентября 2026 года.
 
@@ -149,9 +149,25 @@ RISKY FILE PATHS      PASS
 DEPENDENCY LICENSES   PASS
 GITHUB ACTIONS        PASS (0 workflow runs)
 PROJECT LICENSE       PASS (AGPL-3.0-or-later)
-PUBLICATION           READY
+PUBLICATION           HOLD (commit metadata privacy)
 ```
 
 Перевод visibility в `Public` должен выполняться вручную владельцем репозитория в GitHub Settings.
 
 После публикации следует считать опубликованную версию кода фактически необратимо раскрытой: возврат repository в private не отзывает уже сделанные clones/forks.
+
+
+## 10. Финальный аудит перед сменой visibility
+
+Дополнительная проверка commit metadata выявила 98 commits и несколько author identities. Среди email-адресов commit metadata присутствует адрес на публичном почтовом домене, не являющийся GitHub noreply. Значение адреса в документацию не переносится.
+
+Это не credential и не security leak, но после перевода репозитория в public Git history сделает этот адрес публичным.
+
+Критерий закрытия:
+
+- либо владелец проекта явно принимает публикацию исторического author email;
+- либо Git history переписывается с заменой author/committer identity на неперсональный/noreply адрес, после чего выполняется повторный gitleaks/public-readiness scan.
+
+Также обнаружен legacy-слой ранней Next.js/ChatGPT-hosted версии (`next.config.ts`, часть `app/`, `db/`, `drizzle/`, `.openai/hosting.json`). Текущий production runtime использует Vite + `src/client` + `src/worker` + `migrations/`. Перед Public рекомендуется отдельный bounded cleanup с `pnpm launch:check`, не удаляя используемые `app/globals.css` и `app/outbox-core.mjs`.
+
+Печатная `docs/LIBRARIAN_QUICK_GUIDE_A4.pdf` также должна быть либо перегенерирована из актуальной инструкции, либо временно удалена, чтобы публичный репозиторий не распространял устаревшую памятку.
