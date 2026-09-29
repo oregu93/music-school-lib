@@ -1,120 +1,172 @@
-# Architecture Rules
+# Архитектурные правила MLC
 
-## EVOLVABILITY-01
-Production changes must remain backward-compatible where practical.
-Prefer additive migrations, explicit migration steps, validation, and delayed cleanup.
-Do not use production as a development environment.
-Development path: local -> staging -> production.
+Эти правила фиксируют решения, которые должны сохраняться при дальнейшей разработке.
 
-## VENDOR-FREE-01
-Business logic, data model, authentication model, search model, and synchronization
-must not depend unnecessarily on Cloudflare-specific client APIs.
-Cloudflare is the current hosting provider, not an architectural requirement.
-The application should remain portable to a conventional Linux server, another cloud,
-or a local installation.
+## EVOLVABILITY-01 — эволюционность
 
-## OFFLINE-FIRST-01
-Core librarian workflows must continue during temporary loss of internet connectivity.
+Изменения production должны по возможности оставаться обратно совместимыми.
 
-Required offline-capable workflows:
-- catalog lookup;
-- inventory-number lookup;
-- opening locally available records;
-- inventory checks;
-- edits queued for synchronization;
-- loan and return operations queued for synchronization.
+Предпочтительно:
 
-Local browser storage will use IndexedDB for:
-- compact catalog replica;
-- locally cached full records;
-- pending operation outbox;
-- synchronization metadata;
-- device identity.
+- additive migrations;
+- явные шаги миграции;
+- проверка результата до удаления старых структур;
+- отложенная очистка;
+- сохранение рабочих API-контрактов при расширении.
 
-After connectivity returns, synchronization resumes automatically.
+Production не является средой разработки.
 
-## DEGRADED-MODE-01
-The application must continue useful work when the backend is reachable for reads
-but temporarily unable to accept writes, including quota or service incidents.
+Путь выпуска:
 
-Writes must be queued locally instead of being silently lost.
-The UI must distinguish:
-- synchronized;
-- pending synchronization;
-- conflict;
-- synchronization error.
+```text
+local -> staging -> production
+```
 
-## CROSS-PLATFORM-01
-Supported target clients:
-- Windows desktop browsers / PWA;
-- Linux desktop browsers / PWA;
-- Android browser / PWA;
-- iOS Safari / PWA where platform capabilities permit.
+## VENDOR-FREE-01 — отсутствие обязательной привязки к поставщику
 
-Runtime business logic must not depend on OS-specific filesystem paths or shell tools.
+Бизнес-логика, модель данных, авторизация, поиск и синхронизация не должны без необходимости зависеть от Cloudflare/Vercel-specific client APIs.
 
-USB/Bluetooth barcode scanners should work as keyboard input.
-Mobile camera scanning should use web capabilities with manual-entry fallback.
+Cloudflare Workers/D1 и Vercel — текущая инфраструктура, а не архитектурное требование.
 
-## SYNC-01
-Each mutation intended for synchronization must have:
-- operation_id: globally unique UUID;
-- device_id;
-- actor_id;
-- entity type and entity id;
+Приложение должно оставаться переносимым на:
+
+- обычный Linux-сервер;
+- другой cloud;
+- локальную установку с совместимым HTTP API и SQLite/PostgreSQL-подобным datastore.
+
+## OFFLINE-FIRST-01 — сохранность работы при временной потере сети
+
+Изменяющие операции не должны теряться при кратковременном отсутствии связи.
+
+Текущая реализация:
+
+- IndexedDB outbox;
+- стабильный `device_id`;
+- стабильный `operation_id`;
+- автоматический replay pending-операций;
+- явные статусы pending/conflict/failed;
+- idempotent server processing;
+- revision-based conflict detection.
+
+Полная локальная реплика всего каталога остаётся дальнейшим этапом PWA/offline hardening и не считается полностью реализованной.
+
+## DEGRADED-MODE-01 — деградированный режим
+
+При временной недоступности записи:
+
+- операция должна либо безопасно попасть в outbox, либо пользователь должен получить явную ошибку;
+- silent data loss недопустим;
+- UI различает:
+  - синхронизировано;
+  - ожидает отправки;
+  - конфликт;
+  - ошибка сохранения.
+
+## CROSS-PLATFORM-01 — кроссплатформенность
+
+Целевые клиенты:
+
+- Windows desktop browser;
+- Linux desktop browser;
+- Android browser/PWA;
+- iOS Safari/PWA с платформенными ограничениями.
+
+Runtime-логика не должна зависеть от локальных путей ОС или shell-команд.
+
+USB/Bluetooth barcode scanners должны работать как keyboard input.
+
+Мобильное сканирование камерой должно иметь ручной fallback.
+
+## SYNC-01 — идентичность синхронизируемой операции
+
+Каждая синхронизируемая mutation имеет:
+
+- `operation_id` — UUID;
+- `device_id`;
+- actor identity;
+- entity type/id;
 - operation type;
-- base_revision when applicable;
+- `base_revision` где требуется;
 - client timestamp;
 - payload;
-- local sync state.
+- локальный sync state.
 
-Server mutation endpoints must become idempotent:
-replaying the same operation_id must not duplicate the operation.
+Повтор одного `operation_id` не должен дублировать действие.
 
-## CONCURRENCY-01
-Mutable records should have a server-side revision/version.
-Offline and concurrent edits must not silently overwrite newer data.
+## CONCURRENCY-01 — конкурентное редактирование
 
-Critical workflows such as issuing the same exemplar to two readers must reject
-incompatible concurrent operations rather than using last-write-wins.
+Изменяемые записи имеют server-side `revision`.
 
-## DATA-IDENTITY-01
-Internal numeric catalog id remains the stable technical relationship key.
+Клиент передаёт `baseRevision`.
 
-inventory_number is the primary user-facing exemplar identifier but is not assumed
-to be unique because legacy data contains duplicates.
+Новая серверная версия не должна молча перезаписываться старым клиентом.
 
-db_number remains a secondary legacy/source identifier.
+Критические бизнес-операции, например одновременная выдача одного экземпляра, должны отклонять несовместимые состояния.
 
-Exact inventory-number lookup must support:
-- zero matches;
-- one match;
-- multiple matches with explicit disambiguation.
+## DATA-IDENTITY-01 — идентификаторы
 
-## LOCAL-DATA-01
-The local datastore should contain a compact representation of the complete catalog,
-not merely recently opened records.
+Внутренний numeric catalog id — технический relationship key.
 
-Large or infrequently required data such as raw MARC may be cached separately.
+`inventory_number` — основной пользовательский идентификатор экземпляра.
 
-Local data is a working replica, not an independent source of truth.
-The server remains canonical once synchronization succeeds.
+`inventory_number` не считается уникальным, поскольку исторический каталог содержит допустимые повторы.
 
-## SECURITY-01
-Authorization and permissions remain server-authoritative.
+`db_number` — вторичный legacy/source identifier.
 
-Offline access is allowed only for a previously authenticated user/device under
-a bounded local trust policy.
+Поиск по инвентарному номеру должен корректно поддерживать:
 
-Client UI restrictions are not a security boundary.
+- 0 совпадений;
+- 1 совпадение;
+- несколько совпадений с явным выбором.
 
-## DEPLOYMENT-01
-Environment separation is mandatory:
+## SECURITY-01 — серверная авторизация
+
+Права и роли определяются сервером.
+
+Ограничения UI не являются security boundary.
+
+OAuth/access tokens, session tokens и secrets не должны сохраняться в документации, Git или пользовательских export-файлах.
+
+## PRIVACY-01 — минимизация персональных данных
+
+В репозиторий, тестовые fixtures и документацию не помещаются реальные имена, email, UID и иные идентификаторы сотрудников.
+
+В production БД допускается хранение только данных, необходимых для авторизации, аудита и библиотечной работы.
+
+## DEPLOYMENT-01 — разделение окружений
+
+Обязательные среды:
+
 - local;
 - staging;
 - production.
 
-Production deployment, migration, import, and destructive operations require
-explicit environment selection.
+Production deployment, migrations, import и destructive operations требуют явного выбора окружения.
 
-All schema migrations are versioned in Git.
+Перед production:
+
+1. `pnpm launch:check`;
+2. staging deployment;
+3. staging acceptance;
+4. backup при изменении данных/схемы;
+5. production deployment;
+6. production smoke/acceptance.
+
+Все schema migrations версионируются в Git.
+
+## BACKUP-01 — восстановимость
+
+Перед рискованными изменениями должны существовать:
+
+- D1 SQL export;
+- контрольный CSV catalog export;
+- проверка количества записей;
+- понятная процедура восстановления в новую базу до переключения production binding.
+
+## USER-ACCESS-01 — пользовательский маршрут
+
+Основной пользовательский origin — Vercel access gateway.
+
+Прямой `workers.dev` — технический/резервный backend route.
+
+Перед переключением origin пользователь должен дождаться состояния «Синхронизировано», поскольку browser session и IndexedDB outbox origin-bound.
