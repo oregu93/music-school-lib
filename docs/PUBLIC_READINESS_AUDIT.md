@@ -1,6 +1,6 @@
 # Аудит готовности MLC к публикации
 
-Статус: **HOLD — содержимое и история файлов прошли основные проверки, но финальный аудит выявил персональный email в metadata исторических Git commits. Перед Public требуется либо явное согласие на его раскрытие, либо переписывание author/committer metadata. Также рекомендуется удалить/архивировать несколько устаревших legacy-файлов.**
+Статус: **HOLD — Git history переписана на GitHub noreply metadata; legacy Next.js/ChatGPT-hosting/Drizzle слой и устаревшая PDF-памятка удалены. Перед Public остались локальные финальные проверки `pnpm launch:check` и повторный Gitleaks по актуальному HEAD.**
 
 Дата: 29 сентября 2026 года.
 
@@ -149,7 +149,7 @@ RISKY FILE PATHS      PASS
 DEPENDENCY LICENSES   PASS
 GITHUB ACTIONS        PASS (0 workflow runs)
 PROJECT LICENSE       PASS (AGPL-3.0-or-later)
-PUBLICATION           HOLD (commit metadata privacy)
+PUBLICATION           HOLD (final local verification)
 ```
 
 Перевод visibility в `Public` должен выполняться вручную владельцем репозитория в GitHub Settings.
@@ -171,3 +171,19 @@ PUBLICATION           HOLD (commit metadata privacy)
 Также обнаружен legacy-слой ранней Next.js/ChatGPT-hosted версии (`next.config.ts`, часть `app/`, `db/`, `drizzle/`, `.openai/hosting.json`). Текущий production runtime использует Vite + `src/client` + `src/worker` + `migrations/`. Перед Public рекомендуется отдельный bounded cleanup с `pnpm launch:check`, не удаляя используемые `app/globals.css` и `app/outbox-core.mjs`.
 
 Печатная `docs/LIBRARIAN_QUICK_GUIDE_A4.pdf` также должна быть либо перегенерирована из актуальной инструкции, либо временно удалена, чтобы публичный репозиторий не распространял устаревшую памятку.
+
+
+## 11. Cleanup перед Public
+
+Выполнена очистка текущего дерева от неиспользуемого раннего слоя проекта:
+
+- удалена конфигурация раннего ChatGPT/OpenAI-hosting;
+- удалены legacy Next.js entrypoints и API routes;
+- удалены старые Drizzle schema/config/snapshots, поскольку production использует versioned SQL migrations из `migrations/`;
+- удалён устаревший design-baseline синхронизации, который больше не отражал production implementation;
+- удалена устаревшая печатная PDF-памятка; актуальным источником остаётся `docs/LIBRARIAN_QUICK_GUIDE.md` и `/help`;
+- `tsconfig.json` очищен от `.next`/`next-env` путей.
+
+При этом сохранены используемые текущим runtime файлы `app/catalog-client.tsx`, `app/globals.css`, `app/outbox.ts`, `app/outbox-core.mjs`.
+
+После history rewrite проверка последних GitHub commits показывает noreply author/committer metadata.
