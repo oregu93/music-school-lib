@@ -1,6 +1,6 @@
 # Аудит готовности MLC к публикации
 
-Статус: **HOLD — secret/PII scan и dependency-license review пройдены; выбрана AGPL-3.0-or-later. До Public осталось добавить полный стандартный текст LICENSE и проверить GitHub Actions/artifacts.**
+Статус: **HOLD — secret/PII scan, dependency-license review и GitHub Actions/artifacts review пройдены; выбрана AGPL-3.0-or-later. До Public осталось добавить полный стандартный текст LICENSE и выполнить финальный visibility switch.**
 
 Дата: 29 сентября 2026 года.
 
@@ -60,7 +60,9 @@ git log --all -p -- . ':!pnpm-lock.yaml' \
 
 ### GitHub Actions
 
-Перед сменой visibility проверить историю Actions, logs и artifacts. При переводе private -> public GitHub делает историю Actions/logs публичной.
+Проверка выполнена через GitHub: `workflow_runs.total_count = 0`.
+
+Результат: **PASS**. Истории GitHub Actions runs/artifacts для раскрытия нет.
 
 ### Зависимости
 
